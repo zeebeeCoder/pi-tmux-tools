@@ -1,0 +1,21 @@
+node_modules/
+.pi/
+.recovery-test-state/
+
+# Local experiments, session bookkeeping and generated verification output
+/evidence/
+/spikes/
+/.ralph/
+/EVIDENCE.md
+/RELOAD-EVIDENCE.md
+/PICKER*-EVIDENCE.md
+/test/recovery-lab.test.js
+/test/integration/recovery-lab.test.js
+/test/integration/recovery-owner.test.js
+/test/manual/recovery-lab.js
+/test/manual/claude-native-smoke.js
+coverage/
+*.log
+*.tgz
+__pycache__/
+*.pyc
