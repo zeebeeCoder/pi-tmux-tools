@@ -1,0 +1,15 @@
+{
+  "scripts/check_tmux_version.sh": "49e2b2874bbc5b64bf225ac51239c923d965aa8e85528d7850870ee5e1daa421",
+  "scripts/helpers.sh": "9c2ec8a6741bc16d5eca21933c98190775b579e8bf5f7c8f8cce833b04ff52de",
+  "scripts/process_restore_helpers.sh": "815e2206035ca3214bf5850d75787b214ca080109d405d86ba3ba334141972ab",
+  "scripts/restore.exp": "e10057a728a9a195a11f8986c92b7caa1482f0415213b5abf49cd2b9306e30c0",
+  "scripts/restore.sh": "e90213fe22e672c56fe8c8ab4bfe9522fb405683d81367ab91c497dc5886ffc0",
+  "scripts/save.sh": "987dee1b48f38498ad06bdd0bf7bba763cd2422ec807b8cba1388692025b07ff",
+  "scripts/spinner_helpers.sh": "e5b08ebde7803faf441a262d9e3743f39c4f2c76b66140b9d09ba04e40a9abcf",
+  "scripts/tmux_spinner.sh": "4173914dae6fe65e2ab44153c2168acd1e36105d8966a1f7101ae27f1e7989ac",
+  "scripts/variables.sh": "6d58958f561c40ebe08be33a3f10e176f124828758c909cc4ef536fe27e4683f",
+  "save_command_strategies/gdb.sh": "bdb7d980e555ee2f35bdeb2720fd06b29d54f7b76d0114fccdacf328495cc752",
+  "save_command_strategies/linux_procfs.sh": "6948ec0181a16633649e11248807c9f67570abbc660f26fd3843c319d90dae93",
+  "save_command_strategies/pgrep.sh": "3bb36b361a5663dedbeb5d96a82faa3ad1c67d8d0905e70b2857a99ed0ae63d8",
+  "save_command_strategies/ps.sh": "0f66020b3841dd378f66b024b86533a7b953d0b165f461bacec98942332a897b"
+}
