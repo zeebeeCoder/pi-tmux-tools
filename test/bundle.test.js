@@ -54,7 +54,7 @@ test('packed artifact needs no bundler/local JS at load; shipped CLI and Python 
     }))[0];
     const files = result.files.map(f => f.path);
     for (const path of ['extension.ts', 'src/extension.ts', 'src/runtime.js', 'src/process-info.py',
-      'src/claude-owner.py', 'bin/claude-hook.js', 'bin/inspect.js', 'bin/picker.js', 'bin/scope.js', 'tmux/scope.conf']) assert.ok(files.includes(path), path);
+      'src/claude-owner.py', 'bin/claude-hook.js', 'bin/inspect.js', 'bin/picker.js', 'bin/tmux-scope.js', 'tmux/scope.conf']) assert.ok(files.includes(path), path);
     assert.ok(files.every(f => f === 'package.json' || f === 'README.md' || f === 'extension.ts' ||
       f === 'scripts/build-extension.js' || f.startsWith('src/') || f.startsWith('bin/') || f.startsWith('tmux/')),
       'package contains runtime/build/docs only, never tests or local artifacts');

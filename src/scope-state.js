@@ -1,19 +1,22 @@
-// Scope snapshots: topology plus exact agent bindings, saved in the scope's home, and
-// restore onto a server this process has just created. No commands, pane contents,
-// transcripts or environments are captured. Conversations are never guessed.
+// Scope snapshots: topology plus exact agent bindings, saved in the scope's home, and restored
+// into a scope server tmux has just started (tmux/scope.conf runs this once per server start).
+// No commands, pane contents, transcripts or environments are captured. Conversations are
+// never guessed.
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { inspect, processesFor } from "./runtime.js";
 import { exactReference } from "./recovery/model.js";
-import { home, socketPath, status, tmux } from "./scope.js";
+import { basename } from "node:path";
+import { home, ensureHome, scopeOf, tmux } from "./scope.js";
 
 const KEEP = 50;
 const SEP = "\t"; // tmux escapes other control characters in format output
 export const quote = (s) => "'" + String(s).replaceAll("'", "'\\''") + "'";
 
-function t(name, env, args) {
-  const r = tmux(name, args, { env });
+function t(socket, env, args) {
+  const r = tmux(socket, args, { env });
   if (r.status !== 0) throw new Error(`tmux ${args[0]} failed: ${r.stderr.trim()}`);
   return r.stdout.replace(/\n$/, "");
 }
@@ -37,12 +40,13 @@ export function agentFor(row, env = process.env) {
   return { kind: "pi", ...ref };
 }
 
-export function capture(name, env = process.env) {
-  const sessions = rows(t(name, env, ["list-sessions", "-F", ["#{session_name}", "#{session_last_attached}"].join(SEP)]));
-  const windows = rows(t(name, env, ["list-windows", "-a", "-F", ["#{session_name}", "#{window_index}", "#{window_name}", "#{window_layout}", "#{window_active}"].join(SEP)]));
-  const panes = rows(t(name, env, ["list-panes", "-a", "-F", ["#{session_name}", "#{window_index}", "#{pane_index}", "#{pane_id}", "#{pane_current_path}", "#{pane_active}"].join(SEP)]));
+export function capture(socket, env = process.env) {
+  const name = scopeOf(socket);
+  const sessions = rows(t(socket, env, ["list-sessions", "-F", ["#{session_name}", "#{session_last_attached}"].join(SEP)]));
+  const windows = rows(t(socket, env, ["list-windows", "-a", "-F", ["#{session_name}", "#{window_index}", "#{window_name}", "#{window_layout}", "#{window_active}"].join(SEP)]));
+  const panes = rows(t(socket, env, ["list-panes", "-a", "-F", ["#{session_name}", "#{window_index}", "#{pane_index}", "#{pane_id}", "#{pane_current_path}", "#{pane_active}"].join(SEP)]));
   if (sessions.some((r) => r.length !== 2) || windows.some((r) => r.length !== 5) || panes.some((r) => r.length !== 6)) throw new Error("names or paths containing tabs are not supported");
-  const inspected = new Map(inspect(socketPath(name, env)).map((r) => [r.pane.pane, r]));
+  const inspected = new Map(inspect(socket).map((r) => [r.pane.pane, r]));
   const snapshot = {
     version: 1, scope: name, savedAt: new Date().toISOString(),
     sessions: sessions.map(([session, lastAttached]) => ({
@@ -76,19 +80,22 @@ function writeAtomic(path, text) {
   fs.renameSync(tmp, path);
 }
 
+const restoring = (socket, env) => tmux(socket, ["show-option", "-gqv", "@scope-restoring"], { env }).stdout.trim() !== "";
+
 /**
- * Save the live scope. Refused while a restore is running, so a half-built server
- * never replaces the snapshot it is being built from. Older snapshots are kept.
+ * Save the running scope. Refused while a restore is running, so a half-built server never
+ * replaces the snapshot it is being built from. Older snapshots are kept.
  */
-export function save(name, { env = process.env, ifOlderSeconds } = {}) {
-  if (!status(name, env).live) throw new Error(`Scope ${name} is not running`);
+export function save(socket, { env = process.env, ifOlderSeconds } = {}) {
+  const name = scopeOf(socket);
   if (ifOlderSeconds !== undefined) {
     const pointer = join(home(name, env), "latest.json");
     if (fs.existsSync(pointer) && Date.now() - fs.statSync(pointer).mtimeMs < ifOlderSeconds * 1000) return { name, action: "fresh" };
   }
-  if (tmux(name, ["show-option", "-gqv", "@scope-restoring"], { env }).stdout.trim()) return { name, action: "restoring" };
-  const snapshot = capture(name, env);
+  if (restoring(socket, env)) return { name, action: "restoring" };
+  const snapshot = capture(socket, env);
   const dir = snapshotsDir(name, env);
+  ensureHome(name, env);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = snapshot.savedAt.replaceAll(":", "-") + ".json";
   writeAtomic(join(dir, file), JSON.stringify(snapshot, null, 2) + "\n");
@@ -115,7 +122,7 @@ export function resumeCommand(a, env = process.env) {
   return a.kind === "claude" ? `${env.PI_TMUX_SCOPE_CLAUDE || "claude"} --resume ${quote(a.id)}` : `${env.PI_TMUX_SCOPE_PI || "pi"} --session ${quote(a.file)}`;
 }
 
-/** Decide, before any server exists, what each saved agent pane gets. */
+/** Decide, before anything is created, what each saved agent pane gets. */
 export function plan(snapshot, env = process.env, alive = (pids) => processesFor(pids)) {
   const pis = snapshot.sessions.flatMap((s) => s.windows.flatMap((w) => w.panes.map((p) => ({ s, w, p })))).filter(({ p }) => p.agent);
   const pids = pis.map(({ p }) => p.agent.pid).filter((pid) => Number.isSafeInteger(pid));
@@ -127,7 +134,7 @@ export function plan(snapshot, env = process.env, alive = (pids) => processesFor
     if (a.kind === "pi-subagent") { gap("subagent conversation; owned by pi-subagent, not relaunched"); continue; }
     if (a.kind !== "pi" && a.kind !== "claude") { gap(`agent state was ${a.status} at save; not relaunched`); continue; }
     const proc = live[a.pid];
-    if (proc?.live && proc.birth === a.birth) { gap("the saved Pi process is still running elsewhere; not launched twice"); continue; }
+    if (proc?.live && proc.birth === a.birth) { gap("the saved agent process is still running elsewhere; not launched twice"); continue; }
     if (seen.has(a.file)) { gap("same conversation already planned in another pane"); continue; }
     let reason;
     try { reason = a.kind === "claude" ? claudeReference(a) : exactReference(null, a); } catch { reason = "unsupported conversation path"; }
@@ -138,55 +145,88 @@ export function plan(snapshot, env = process.env, alive = (pids) => processesFor
   return { launches, gaps };
 }
 
+const SHELLS = new Set(["zsh", "bash", "sh", "fish", "dash", "ksh", "tcsh", "nu"]);
+
+/** Sessions nobody has used yet: one window, one pane, only a shell running. */
+function untouched(socket, env) {
+  const panes = rows(t(socket, env, ["list-panes", "-a", "-F", ["#{session_id}", "#{session_name}", "#{session_windows}", "#{window_panes}", "#{pane_current_command}"].join(SEP)]));
+  return panes.filter(([, , w, p, cmd]) => w === "1" && p === "1" && SHELLS.has(basename(cmd))).map(([id, name]) => ({ id, name }));
+}
+
 /**
- * Rebuild a stopped scope from its latest snapshot on a server created here, then
- * resume each planned Pi with its exact conversation file. Never runs on a live server.
+ * Rebuild this freshly started scope server from its latest snapshot, then resume each planned
+ * agent with its exact conversation. Untouched bootstrap sessions (the one `tmux -L <scope>`
+ * creates) are replaced; sessions already in use are kept and never overwritten. Runs once per
+ * server start; the caller's `@scope-restoring` flag is always cleared at the end.
  */
-export function restore(name, { env = process.env } = {}) {
-  const found = latest(name, env);
-  if (!found) throw new Error(`Scope ${name} has no snapshot`);
-  if (status(name, env).live) throw new Error(`Scope ${name} is running; attach instead`);
-  const { snapshot } = found;
-  if (!snapshot.sessions.some((x) => x.windows.some((w) => w.panes.length))) throw new Error(`Snapshot ${found.file} is empty; use --fresh`);
-  const { launches, gaps } = plan(snapshot, env);
-  const dirFor = (p) => {
-    const cwd = launches.get(p)?.cwd ?? p.cwd;
-    if (fs.existsSync(cwd) && fs.statSync(cwd).isDirectory()) return cwd;
-    gaps.push({ where: "", kind: "directory", file: null, reason: `missing directory ${cwd}; opened in home` });
-    return env.HOME || homedir();
-  };
-  const sessions = [...snapshot.sessions].sort((a, b) => a.lastAttached - b.lastAttached);
-  let created = false;
-  const launched = [];
-  for (const s of sessions) {
-    let sessionId;
-    for (const w of s.windows) {
-      const [first, ...rest] = w.panes;
-      let windowId, paneIds;
-      if (!sessionId) {
-        const args = ["new-session", "-d", "-P", "-F", `#{session_id}${SEP}#{window_id}${SEP}#{pane_id}`, "-s", s.name, "-c", dirFor(first)];
-        [sessionId, windowId, paneIds] = t(name, env, args).split(SEP).map((x, i) => (i === 2 ? [x] : x));
-        if (!created) { t(name, env, ["set-option", "-g", "@scope-restoring", "1"]); created = true; }
-      } else {
-        [windowId, paneIds] = t(name, env, ["new-window", "-d", "-P", "-F", `#{window_id}${SEP}#{pane_id}`, "-t", `${sessionId}:`, "-c", dirFor(first)]).split(SEP).map((x, i) => (i === 1 ? [x] : x));
-      }
-      for (const p of rest) paneIds.push(t(name, env, ["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", windowId, "-c", dirFor(p)]));
-      t(name, env, ["rename-window", "-t", windowId, w.name]);
-      t(name, env, ["select-layout", "-t", windowId, w.layout]);
-      w.panes.forEach((p, i) => {
-        const a = launches.get(p);
-        if (a) {
-          t(name, env, ["send-keys", "-t", paneIds[i], "-l", resumeCommand(a, env)]);
-          t(name, env, ["send-keys", "-t", paneIds[i], "Enter"]);
-          launched.push({ where: `${s.name}:${w.index}.${p.index}`, pane: paneIds[i], agent: a.kind, file: a.file, id: a.id });
+export function restore(socket, { env = process.env, settle = 3000 } = {}) {
+  const name = scopeOf(socket);
+  try {
+    t(socket, env, ["set-option", "-g", "@scope-restoring", "1"]);
+    // Only a server that has just started is restored, and only once.
+    const age = Date.now() / 1000 - Number(t(socket, env, ["display-message", "-p", "#{start_time}"]));
+    if (!(age < 30)) return { scope: name, action: "already-running" };
+    if (t(socket, env, ["show-option", "-gqv", "@scope-restored"])) return { scope: name, action: "already-restored" };
+    t(socket, env, ["set-option", "-g", "@scope-restored", "1"]);
+    const found = latest(name, env);
+    if (!found || env.PI_TMUX_SCOPE_FRESH) return { scope: name, action: found ? "fresh" : "no-save" };
+    const { snapshot } = found;
+    // The session that started the server may still be on its way.
+    for (const deadline = Date.now() + settle; Date.now() < deadline && !tmux(socket, ["list-sessions"], { env }).stdout.trim();) spawnSync("sleep", ["0.05"]);
+    const bootstrap = untouched(socket, env);
+    for (const b of bootstrap) t(socket, env, ["rename-session", "-t", b.id, `__scope_bootstrap_${b.id.slice(1)}`]);
+    const inUse = new Set(rows(t(socket, env, ["list-sessions", "-F", "#{session_name}"])).map(([n]) => n));
+    const { launches, gaps } = plan(snapshot, env);
+    const dirFor = (p) => {
+      const cwd = launches.get(p)?.cwd ?? p.cwd;
+      if (fs.existsSync(cwd) && fs.statSync(cwd).isDirectory()) return cwd;
+      gaps.push({ where: "", kind: "directory", file: null, reason: `missing directory ${cwd}; opened in home` });
+      return env.HOME || homedir();
+    };
+    const launched = [], created = [];
+    for (const s of [...snapshot.sessions].sort((a, b) => a.lastAttached - b.lastAttached)) {
+      if (inUse.has(s.name)) { gaps.push({ where: s.name, kind: "session", file: null, reason: "a session with this name is already in use; not restored" }); continue; }
+      let sessionId;
+      for (const w of s.windows) {
+        const [first, ...rest] = w.panes;
+        let windowId, paneIds;
+        if (!sessionId) {
+          [sessionId, windowId, paneIds] = t(socket, env, ["new-session", "-d", "-P", "-F", `#{session_id}${SEP}#{window_id}${SEP}#{pane_id}`, "-s", s.name, "-c", dirFor(first)]).split(SEP).map((x, i) => (i === 2 ? [x] : x));
+          created.push({ id: sessionId, lastAttached: s.lastAttached });
+        } else {
+          [windowId, paneIds] = t(socket, env, ["new-window", "-d", "-P", "-F", `#{window_id}${SEP}#{pane_id}`, "-t", `${sessionId}:`, "-c", dirFor(first)]).split(SEP).map((x, i) => (i === 1 ? [x] : x));
         }
-        if (p.active) t(name, env, ["select-pane", "-t", paneIds[i]]);
-      });
-      if (w.active) t(name, env, ["select-window", "-t", windowId]);
+        for (const p of rest) paneIds.push(t(socket, env, ["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", windowId, "-c", dirFor(p)]));
+        t(socket, env, ["rename-window", "-t", windowId, w.name]);
+        t(socket, env, ["select-layout", "-t", windowId, w.layout]);
+        w.panes.forEach((p, i) => {
+          const a = launches.get(p);
+          if (a) {
+            t(socket, env, ["send-keys", "-t", paneIds[i], "-l", resumeCommand(a, env)]);
+            t(socket, env, ["send-keys", "-t", paneIds[i], "Enter"]);
+            launched.push({ where: `${s.name}:${w.index}.${p.index}`, pane: paneIds[i], agent: a.kind, file: a.file, id: a.id });
+          }
+          if (p.active) t(socket, env, ["select-pane", "-t", paneIds[i]]);
+        });
+        if (w.active) t(socket, env, ["select-window", "-t", windowId]);
+      }
     }
+    if (created.length) {
+      // Move clients off the bootstrap sessions, then remove those still untouched.
+      const target = created.reduce((a, b) => (b.lastAttached >= a.lastAttached ? b : a)).id;
+      const ids = new Set(bootstrap.map((b) => b.id));
+      for (const [client, session] of rows(t(socket, env, ["list-clients", "-F", `#{client_name}${SEP}#{session_id}`]))) {
+        if (ids.has(session)) t(socket, env, ["switch-client", "-c", client, "-t", target]);
+      }
+      const still = new Set(untouched(socket, env).map((b) => b.id));
+      for (const b of bootstrap) if (still.has(b.id)) t(socket, env, ["kill-session", "-t", b.id]);
+    } else {
+      for (const b of bootstrap) t(socket, env, ["rename-session", "-t", b.id, b.name]);
+    }
+    const report = { scope: name, action: "restored", snapshot: found.file, restoredAt: new Date().toISOString(), launched, gaps };
+    writeAtomic(join(home(name, env), "last-restore.json"), JSON.stringify(report, null, 2) + "\n");
+    return report;
+  } finally {
+    tmux(socket, ["set-option", "-gu", "@scope-restoring"], { env });
   }
-  if (created) t(name, env, ["set-option", "-gu", "@scope-restoring"]);
-  const report = { scope: name, snapshot: found.file, restoredAt: new Date().toISOString(), launched, gaps };
-  writeAtomic(join(home(name, env), "last-restore.json"), JSON.stringify(report, null, 2) + "\n");
-  return report;
 }

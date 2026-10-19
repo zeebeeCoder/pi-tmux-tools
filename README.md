@@ -75,74 +75,56 @@ means accepted work. Refresh explicitly: ages and activity are snapshots.
 
 ## Scopes
 
-A scope is a dedicated tmux server for one body of work (e.g. one client), so every
-session list, chooser and the agent picker show only that scope. From a plain terminal
-these attach; inside tmux, `open` and `default` switch the current terminal instead of
-nesting tmux:
-
-```sh
-node bin/scope.js open acme      # attach; if stopped, restore from the last save (or start empty)
-node bin/scope.js save acme      # save topology and exact agent conversations now
-node bin/scope.js list           # scopes, whether each server is live, last save
-node bin/scope.js stop acme      # asks first; saves, then stops only that server
-node bin/scope.js open acme --fresh   # start empty, ignoring the save
-node bin/scope.js default        # back to the default tmux server
-```
+A scope is any non-default tmux server: `tmux -L acme`. Each server is separate, so
+`choose-tree`, tmux-fzf and the agent picker show only that scope's sessions and agents.
+Everything is plain tmux; there is no extra CLI. Source `tmux/scope.conf` once, last, from
+your tmux configuration; it changes nothing on the default server.
 
 ### Everyday use
 
-Scopes are switched from the command line; there is no switcher popup. A shell alias
-keeps it short: `alias scope='node /absolute/path/to/pi-tmux-continuity/bin/scope.js'`.
+```sh
+tmux -L acme                 # start or come back to scope "acme" (restores it if it was gone)
+tmux -L acme attach          # attach to a running scope
+tmux -L acme ls              # its sessions
+tmux -L acme kill-server     # end it (save first: prefix C-s)
+tmux attach                  # the default server, as before
+```
 
-1. **Start or resume work:** `scope open acme`. It attaches if the scope is running, restores it
-   from its last save if it is not (after a crash or reboot), or creates it with one shell.
-2. **Work normally.** Create sessions/windows/splits and start Pi or Claude as usual. The amber
-   block in the status bar (and `[acme]` in the window title) shows which scope you are in; no
-   block means the default server. `Ctrl+Space s` and `Ctrl+Space a` list only this scope's
-   sessions and agents.
-3. **Move between scopes:** `scope open other` or `scope default`, from inside tmux or a plain
-   terminal. `Ctrl+Space d` leaves the scope running and drops to a plain shell.
-4. **Saving is automatic** every five minutes while a client is attached. Run `scope save acme`
-   right before something risky.
-5. **Finish:** `scope stop acme` saves, then stops only that server. `scope open acme` brings it
-   back later; `scope open acme --fresh` starts it empty instead.
-
-To look around: `scope list` (live/stopped and last save), `tmux -L acme ls`, and
-`~/.local/state/tmux/scopes/acme/last-restore.json` for what the last restore launched and
-why any pane came back as a plain shell. Never run an unqualified `tmux kill-server` from
-the default server; `scope stop` only stops the scope it names.
+- **Where am I?** The amber block in the status bar and `[acme]` in the window title. No
+  block means the default server.
+- **Saving** happens every five minutes while a client is attached, whenever a client
+  detaches, and on `prefix C-s`.
+- **Restoring** happens when a scope server starts and the scope has a save, e.g. after a
+  crash, `kill-server` or reboot. The start-up session is replaced by the saved sessions,
+  windows, splits and directories, and each saved agent is resumed in its pane. A message
+  in the status line summarises it. Restore runs once per server start, never on a config
+  reload, and never replaces a session already in use. To start a scope empty instead:
+  `PI_TMUX_SCOPE_FRESH=1 tmux -L acme`.
+- **Moving between scopes:** detach (`prefix d`) and attach to another, or attach from
+  another terminal.
 
 ### What is saved and restored
 
-A save records sessions, windows (names, layouts), panes (directories) and, per pane,
-the exact Pi conversation from the strict registry. No commands, pane contents,
-transcripts or environments. Saves live in the scope home (`snapshots/`, last 50 kept,
-`latest.json`). While a client is attached, the status line autosaves every five
-minutes. Restore runs only when the scope's server is not running: it rebuilds the
-topology on a fresh server and types `pi --session <exact file>` into each saved Pi
-pane, using your normal Pi setup, and `claude --resume <exact session id>` into each
-saved Claude pane; no prompt is sent. Launch flags (e.g. permission modes) are not
-saved, so agents come back with your defaults. Plain panes come back as shells
-in their directories. Explained gaps instead of launches: pi-subagent conversations (owned by pi-subagent), agents not persisted at save time,
-missing/mismatched conversation files (Claude: missing transcript), and a saved agent
-process that is still running.
-Each conversation is launched at most once per restore. `last-restore.json` records
-what was launched and every gap.
+A save records sessions, windows (names, layouts), panes (directories) and, per pane, the
+exact agent conversation from the strict registry. It never records commands, pane
+contents, transcripts or environments. Saves live in `~/.local/state/tmux/scopes/<name>/`
+(`snapshots/`, last 50 kept; `latest.json`). Restore types `pi --session <exact file>` or
+`claude --resume <exact session id>` into the saved panes, using your normal agent setup;
+no prompt is sent. Launch flags such as permission modes are not saved, so agents come
+back with your defaults. Plain panes come back as shells in their directories.
 
-A scope is defined by its home, `~/.local/state/tmux/scopes/<name>/`, not by socket
-files. Servers are addressed by exact socket path (`$TMUX_TMPDIR`, default `/tmp`,
-`/tmux-<uid>/<name>`); a missing `TMUX_TMPDIR` is refused rather than letting tmux fall
-back to `/tmp`. The name `default` is reserved, and scope tooling never addresses the
-default server. Opening a live scope only attaches.
+Explained gaps instead of launches (listed in `last-restore.json`): pi-subagent
+conversations (owned by pi-subagent), agents not persisted at save time, missing or
+mismatched conversation files (Claude: missing transcript), a saved agent process that is
+still running, and sessions whose name is already in use. Each conversation is launched at
+most once. Saving is refused while a restore runs. Errors go to `errors.log` in the scope home.
 
-To show the scope in the status bar and terminal title, source `tmux/scope.conf` last
-from your tmux configuration. It changes nothing on the default server and is
-reload-safe; source it once. Scope servers do not load Resurrect/Continuum; scopes use
-their own snapshots instead.
+Scope servers do not load Resurrect/Continuum; scopes use their own snapshots. tmux calls
+`bin/tmux-scope.js` (save, autosave, restore); it is not meant to be run by hand.
 
-`node test/manual/verify-scopes.js [--keep]` smoke-tests scopes on ephemeral servers in a
-private sandbox. A guard `tmux` refuses any call targeting a socket outside the sandbox,
-and the run checks the real default server's PID is unchanged.
+`node test/manual/verify-scopes.js [--keep]` smoke-tests all of this with real offline Pi on
+ephemeral servers in a private sandbox. A guard `tmux` refuses any call targeting a socket
+outside the sandbox, and the run checks the real default server's PID is unchanged.
 
 ## Ownership, privacy and activity
 
