@@ -83,9 +83,9 @@ export function bootstrapSessions(socket, env = process.env, { autoNamed = true,
 function verify(socket, env, launched, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const rows = new Map(inspect(socket).map((r) => [r.pane.pane, r]));
+    const byPane = new Map(inspect(socket).map((r) => [r.pane.pane, r]));
     for (const l of launched) {
-      const b = rows.get(l.pane)?.binding;
+      const b = byPane.get(l.pane)?.binding;
       l.verified = !!b && b.agent === l.agent && (l.agent === "claude" ? b.sessionId === l.id : b.sessionFile === l.file);
     }
     if (launched.every((l) => l.verified) || Date.now() > deadline) return;
@@ -120,77 +120,97 @@ export function restore(socket, { env = process.env, settle = 3000, verifyMs = 3
 }
 
 function rebuild(socket, env, name, found, settle, verifyMs) {
+  const t = (args) => tmuxOut(socket, args, { env });
   const { snapshot } = found;
-  // The session that started the server may still be on its way.
-  for (const deadline = Date.now() + settle; Date.now() < deadline && !tmux(socket, ["list-sessions"], { env }).stdout.trim();) spawnSync("sleep", ["0.05"]);
+  awaitStartupSession(socket, env, settle);
   const bootstrap = bootstrapSessions(socket, env);
-  for (const b of bootstrap) tmuxOut(socket, ["rename-session", "-t", b.id, `__scope_bootstrap_${b.id.slice(1)}`], { env });
-  const inUse = new Set(rows(tmuxOut(socket, ["list-sessions", "-F", "#{session_name}"], { env })).map(([n]) => n));
+  // Set aside so saved sessions can take their names back (an auto-numbered "0" included).
+  for (const b of bootstrap) t(["rename-session", "-t", b.id, `__scope_bootstrap_${b.id.slice(1)}`]);
+  const inUse = new Set(rows(t(["list-sessions", "-F", "#{session_name}"])).map(([n]) => n));
   const { launches, gaps } = plan(snapshot, env);
+  const build = { t, env, launches, gaps, launched: [] }, created = [];
+  for (const s of [...snapshot.sessions].sort((a, b) => a.lastAttached - b.lastAttached)) {
+    if (inUse.has(s.name)) { keepInUse(s, build); continue; }
+    // pi-subagent recreates its own sessions when the parent resumes; an empty copy would block it.
+    if (s.windows.every((w) => w.panes.every((p) => p.agent?.kind === "pi-subagent"))) continue;
+    created.push({ id: buildSession(s, build), lastAttached: s.lastAttached });
+  }
+  // Renamed above, so the untouched check runs again without the auto-name test.
+  retireBootstrap(t, bootstrap, created, () => bootstrapSessions(socket, env, { autoNamed: false }));
+  verify(socket, env, build.launched, verifyMs);
+  const agentGaps = gaps.filter((g) => g.kind === "pi" || g.kind === "claude").length;
+  const unverified = build.launched.filter((l) => !l.verified).length;
+  const degraded = agentGaps + unverified > 0;
+  if (degraded) t(["set-option", "-g", "@scope-degraded", `${agentGaps + unverified}`]);
+  const report = { scope: name, action: "restored", snapshot: found.file, restoredAt: new Date().toISOString(), degraded, launched: build.launched, gaps };
+  writeAtomic(join(home(name, env), "last-restore.json"), JSON.stringify(report, null, 2) + "\n");
+  return report;
+}
+
+/** The session that started the server may still be on its way. */
+function awaitStartupSession(socket, env, settle) {
+  for (const deadline = Date.now() + settle; Date.now() < deadline && !tmux(socket, ["list-sessions"], { env }).stdout.trim();) spawnSync("sleep", ["0.05"]);
+}
+
+/** A saved session whose name is taken is not restored, and neither are its agents. */
+function keepInUse(s, { launches, gaps }) {
+  gaps.push({ where: s.name, kind: "session", file: null, reason: "a session with this name is already in use; not restored" });
+  for (const w of s.windows) for (const p of w.panes) {
+    const a = launches.get(p);
+    if (a) gaps.push({ where: `${s.name}:${w.index}.${p.index}`, kind: a.kind, file: a.file, reason: "its session is already in use; not resumed" });
+  }
+}
+
+/** Recreate one saved session (windows, splits, layouts, focus), typing each planned resume command. */
+function buildSession(s, { t, env, launches, gaps, launched }) {
   const dirFor = (where, p) => {
     if (isDir(p.cwd)) return p.cwd;
     gaps.push({ where, kind: "directory", file: null, reason: `missing directory ${p.cwd}; opened in home` });
     return env.HOME || homedir();
   };
-  const launched = [], created = [];
-  for (const s of [...snapshot.sessions].sort((a, b) => a.lastAttached - b.lastAttached)) {
-    if (inUse.has(s.name)) {
-      gaps.push({ where: s.name, kind: "session", file: null, reason: "a session with this name is already in use; not restored" });
-      for (const w of s.windows) for (const p of w.panes) {
-        const a = launches.get(p);
-        if (a) gaps.push({ where: `${s.name}:${w.index}.${p.index}`, kind: a.kind, file: a.file, reason: "its session is already in use; not resumed" });
+  let sessionId;
+  for (const w of s.windows) {
+    const [first, ...rest] = w.panes, at = (p) => `${s.name}:${w.index}.${p.index}`;
+    let windowId, paneIds;
+    if (!sessionId) {
+      [sessionId, windowId, paneIds] = t(["new-session", "-d", "-P", "-F", `#{session_id}${SEP}#{window_id}${SEP}#{pane_id}`, "-s", s.name, "-c", dirFor(at(first), first)]).split(SEP).map((x, i) => (i === 2 ? [x] : x));
+    } else {
+      [windowId, paneIds] = t(["new-window", "-d", "-P", "-F", `#{window_id}${SEP}#{pane_id}`, "-t", `${sessionId}:`, "-c", dirFor(at(first), first)]).split(SEP).map((x, i) => (i === 1 ? [x] : x));
+    }
+    for (const p of rest) paneIds.push(t(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", windowId, "-c", dirFor(at(p), p)]));
+    t(["rename-window", "-t", windowId, w.name]);
+    t(["select-layout", "-t", windowId, w.layout]);
+    w.panes.forEach((p, i) => {
+      const a = launches.get(p);
+      if (a) {
+        t(["send-keys", "-t", paneIds[i], "-l", resumeCommand(a, env)]);
+        t(["send-keys", "-t", paneIds[i], "Enter"]);
+        launched.push({ where: at(p), pane: paneIds[i], agent: a.kind, file: a.file, id: a.id });
       }
-      continue;
-    }
-    // pi-subagent recreates its own sessions when the parent resumes; an empty copy would block it.
-    if (s.windows.every((w) => w.panes.every((p) => p.agent?.kind === "pi-subagent"))) continue;
-    let sessionId;
-    for (const w of s.windows) {
-      const [first, ...rest] = w.panes, at = (p) => `${s.name}:${w.index}.${p.index}`;
-      let windowId, paneIds;
-      if (!sessionId) {
-        [sessionId, windowId, paneIds] = tmuxOut(socket, ["new-session", "-d", "-P", "-F", `#{session_id}${SEP}#{window_id}${SEP}#{pane_id}`, "-s", s.name, "-c", dirFor(at(first), first)], { env }).split(SEP).map((x, i) => (i === 2 ? [x] : x));
-        created.push({ id: sessionId, lastAttached: s.lastAttached });
-      } else {
-        [windowId, paneIds] = tmuxOut(socket, ["new-window", "-d", "-P", "-F", `#{window_id}${SEP}#{pane_id}`, "-t", `${sessionId}:`, "-c", dirFor(at(first), first)], { env }).split(SEP).map((x, i) => (i === 1 ? [x] : x));
-      }
-      for (const p of rest) paneIds.push(tmuxOut(socket, ["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", windowId, "-c", dirFor(at(p), p)], { env }));
-      tmuxOut(socket, ["rename-window", "-t", windowId, w.name], { env });
-      tmuxOut(socket, ["select-layout", "-t", windowId, w.layout], { env });
-      w.panes.forEach((p, i) => {
-        const a = launches.get(p);
-        if (a) {
-          tmuxOut(socket, ["send-keys", "-t", paneIds[i], "-l", resumeCommand(a, env)], { env });
-          tmuxOut(socket, ["send-keys", "-t", paneIds[i], "Enter"], { env });
-          launched.push({ where: at(p), pane: paneIds[i], agent: a.kind, file: a.file, id: a.id });
-        }
-        if (p.active) tmuxOut(socket, ["select-pane", "-t", paneIds[i]], { env });
-      });
-      if (w.active) tmuxOut(socket, ["select-window", "-t", windowId], { env });
-    }
+      if (p.active) t(["select-pane", "-t", paneIds[i]]);
+    });
+    if (w.active) t(["select-window", "-t", windowId]);
   }
-  if (created.length) {
-    // Move clients off the start-up session, then remove it if it is still unused.
-    const target = created.reduce((a, b) => (b.lastAttached >= a.lastAttached ? b : a)).id;
-    const ids = new Set(bootstrap.map((b) => b.id));
-    for (const [client, session] of rows(tmuxOut(socket, ["list-clients", "-F", `#{client_name}${SEP}#{session_id}`], { env }))) {
-      if (ids.has(session)) tmuxOut(socket, ["switch-client", "-c", client, "-t", target], { env });
-    }
-    // Renamed above, so check the same sessions again without the auto-name test.
-    const still = new Set(bootstrapSessions(socket, env, { autoNamed: false }).map((b) => b.id));
-    for (const b of bootstrap) {
-      if (still.has(b.id)) tmuxOut(socket, ["kill-session", "-t", b.id], { env });
-      else tmuxOut(socket, ["rename-session", "-t", b.id, b.name], { env });
-    }
-  } else {
-    for (const b of bootstrap) tmuxOut(socket, ["rename-session", "-t", b.id, b.name], { env });
+  return sessionId;
+}
+
+/**
+ * Once something was restored, move clients off the start-up session, then remove it if it is
+ * still untouched; otherwise, or if nothing was restored, give it its name back.
+ */
+function retireBootstrap(t, bootstrap, created, untouched) {
+  if (!created.length) {
+    for (const b of bootstrap) t(["rename-session", "-t", b.id, b.name]);
+    return;
   }
-  verify(socket, env, launched, verifyMs);
-  const agentGaps = gaps.filter((g) => g.kind === "pi" || g.kind === "claude").length;
-  const unverified = launched.filter((l) => !l.verified).length;
-  const degraded = agentGaps + unverified > 0;
-  if (degraded) tmuxOut(socket, ["set-option", "-g", "@scope-degraded", `${agentGaps + unverified}`], { env });
-  const report = { scope: name, action: "restored", snapshot: found.file, restoredAt: new Date().toISOString(), degraded, launched, gaps };
-  writeAtomic(join(home(name, env), "last-restore.json"), JSON.stringify(report, null, 2) + "\n");
-  return report;
+  const target = created.reduce((a, b) => (b.lastAttached >= a.lastAttached ? b : a)).id;
+  const ids = new Set(bootstrap.map((b) => b.id));
+  for (const [client, session] of rows(t(["list-clients", "-F", `#{client_name}${SEP}#{session_id}`]))) {
+    if (ids.has(session)) t(["switch-client", "-c", client, "-t", target]);
+  }
+  const still = new Set(untouched().map((b) => b.id));
+  for (const b of bootstrap) {
+    if (still.has(b.id)) t(["kill-session", "-t", b.id]);
+    else t(["rename-session", "-t", b.id, b.name]);
+  }
 }
