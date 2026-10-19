@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { plan, agentFor, subagentsDir, quote, resumeCommand } from "../src/scope-state.js";
+import { plan, agentFor, subagentsDir, quote, resumeCommand, liveness } from "../src/scope-state.js";
 
 const dir = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "scope-state-")));
 const conv = (name, cwd = dir) => {
@@ -12,21 +12,41 @@ const conv = (name, cwd = dir) => {
   return { kind: "pi", file, id: name, cwd, pid: 4242, birth: "1:1" };
 };
 const snapshot = (...agents) => ({ sessions: [{ name: "s", windows: [{ index: 1, panes: agents.map((agent, index) => ({ index, cwd: dir, agent })) }] }] });
-const none = () => ({});
+const ended = (agents) => new Map(agents.map((a) => [a, "absent"]));
+const states = (state) => (agents) => new Map(agents.map((a) => [a, state]));
 
 test("each resumable Pi conversation is planned once", () => {
   const a = conv("a"), b = conv("b");
-  const { launches, gaps } = plan(snapshot(a, b, { ...a }), {}, none);
+  const { launches, gaps } = plan(snapshot(a, b, { ...a }), {}, ended);
   assert.deepEqual([...launches.values()].map((x) => x.id), ["a", "b"]);
   assert.match(gaps[0].reason, /already planned/);
 });
 
-test("a saved Pi still running elsewhere is never launched twice", () => {
+test("an agent is launched only when its saved process is proven gone", () => {
   const a = conv("live");
-  const { launches, gaps } = plan(snapshot(a), {}, () => ({ 4242: { live: true, birth: "1:1" } }));
+  assert.match(plan(snapshot(a), {}, states("running")).gaps[0].reason, /still running/);
+  assert.match(plan(snapshot(a), {}, states("unknown")).gaps[0].reason, /could not confirm/);
+  assert.equal(plan(snapshot(a), {}, states("reused")).launches.size, 1, "reused PID is a different process");
+  assert.equal(plan(snapshot(a), {}, states("absent")).launches.size, 1);
+});
+
+test("liveness: only ESRCH proves absence; unobservable processes are unknown", () => {
+  const me = { pid: process.pid, birth: "b1" }, gone = { pid: 2 ** 30, birth: "x" }, nopid = { pid: undefined, birth: "x" };
+  const probe = (pids) => Object.fromEntries(pids.map((p) => [p, { live: true, birth: "b1" }]));
+  const s = liveness([me, gone, nopid], probe);
+  assert.equal(s.get(me), "running");
+  assert.equal(s.get(gone), "absent");
+  assert.equal(s.get(nopid), "unknown");
+  assert.equal(liveness([me], () => ({})).get(me), "unknown", "probe omitted the pid");
+  assert.equal(liveness([me], () => { throw new Error("probe failed"); }).get(me), "unknown");
+  assert.equal(liveness([{ ...me, birth: "other" }], probe).values().next().value, "reused");
+});
+
+test("an agent whose directory is gone is not launched elsewhere", () => {
+  const a = { ...conv("nodir"), cwd: join(dir, "deleted") };
+  const { launches, gaps } = plan(snapshot(a), {}, ended);
   assert.equal(launches.size, 0);
-  assert.match(gaps[0].reason, /still running/);
-  assert.equal(plan(snapshot(a), {}, () => ({ 4242: { live: true, birth: "9:9" } })).launches.size, 1, "reused PID is a different process");
+  assert.match(gaps[0].reason, /directory .* is missing; not launched elsewhere/);
 });
 
 test("subagent, unknown and missing conversations are explained gaps", () => {
@@ -35,7 +55,7 @@ test("subagent, unknown and missing conversations are explained gaps", () => {
   const { launches, gaps } = plan(snapshot(
     { ...conv("sub"), kind: "pi-subagent" }, { kind: "unknown", status: "live-non-restorable" }, missing, { ...wrongCwd, cwd: dir },
     { ...conv("c-missing"), kind: "claude", file: join(dir, "nope.jsonl") }, { ...conv("c-bad"), kind: "claude", id: "../x" },
-  ), {}, none);
+  ), {}, ended);
   assert.equal(launches.size, 0);
   assert.deepEqual(gaps.map((g) => g.reason.split(/[;:]/)[0]), [
     "subagent conversation", "agent state was live-non-restorable at save", "conversation not resumable", "conversation not resumable", "conversation not resumable", "conversation not resumable",
@@ -46,7 +66,7 @@ test("subagent, unknown and missing conversations are explained gaps", () => {
 
 test("Claude resumes by exact session id; Pi by exact file; never with a prompt", () => {
   const c = { ...conv("0f1e2d3c-aaaa-bbbb-cccc-1234567890ab"), kind: "claude" };
-  const { launches } = plan(snapshot(c), {}, none);
+  const { launches } = plan(snapshot(c), {}, ended);
   assert.equal(launches.size, 1);
   assert.equal(resumeCommand(c, {}), "claude --resume '0f1e2d3c-aaaa-bbbb-cccc-1234567890ab'");
   assert.equal(resumeCommand(conv("p"), { PI_TMUX_SCOPE_PI: "pi-x" }), `pi-x --session '${join(dir, "p.jsonl")}'`);
