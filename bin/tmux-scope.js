@@ -7,8 +7,9 @@
 // Messages go to that server's attached clients; errors to errors.log in the workspace home.
 import * as fs from "node:fs";
 import { join } from "node:path";
-import { save, restore } from "../src/scope-state.js";
-import { home, scopeOf, tmux } from "../src/scope.js";
+import { save } from "../src/recovery-point.js";
+import { restore } from "../src/restore.js";
+import { home, nameOf, tmux } from "../src/workspace.js";
 
 const [command, socket, ...extra] = process.argv.slice(2);
 
@@ -19,7 +20,7 @@ function tell(message) {
 
 function logError(e) {
   try {
-    const dir = home(scopeOf(socket));
+    const dir = home(nameOf(socket));
     if (fs.existsSync(dir)) fs.appendFileSync(join(dir, "errors.log"), `${new Date().toISOString()} ${command}: ${e.message}\n`);
   } catch { /* nowhere to log */ }
 }

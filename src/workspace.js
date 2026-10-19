@@ -14,20 +14,20 @@ export function validName(name) {
 }
 
 /** The workspace name for a server socket. */
-export function scopeOf(socket) {
+export function nameOf(socket) {
   if (typeof socket !== "string" || !isAbsolute(socket)) throw new Error("An absolute tmux socket path is required");
   const name = basename(socket);
   if (!validName(name)) throw new Error(`Unsupported workspace name ${JSON.stringify(name)}: use letters, digits, '_' and '-'`);
   return name;
 }
 
-export function scopesRoot(env = process.env) {
+export function workspacesRoot(env = process.env) {
   return env.PI_TMUX_SCOPES_HOME || join(env.HOME || homedir(), ".local/state/tmux/scopes");
 }
 
 export function home(name, env = process.env) {
   if (!validName(name)) throw new Error(`Invalid workspace name ${JSON.stringify(name)}`);
-  return join(scopesRoot(env), name);
+  return join(workspacesRoot(env), name);
 }
 
 const canonical = (socket) => { try { return fs.realpathSync(socket); } catch { return socket; } };
@@ -35,14 +35,14 @@ const identityFile = (name, env) => join(home(name, env), "workspace.json");
 
 /** Managed means adopted for exactly this socket path; same name elsewhere is a different server. */
 export function managed(socket, env = process.env) {
-  const file = identityFile(scopeOf(socket), env);
+  const file = identityFile(nameOf(socket), env);
   if (!fs.existsSync(file)) return false;
   return JSON.parse(fs.readFileSync(file, "utf8")).socket === canonical(socket);
 }
 
 /** Explicit opt-in. Refuses a home already bound to a different socket. */
 export function adopt(socket, env = process.env) {
-  const name = scopeOf(socket), file = identityFile(name, env);
+  const name = nameOf(socket), file = identityFile(name, env);
   if (fs.existsSync(file)) {
     const bound = JSON.parse(fs.readFileSync(file, "utf8")).socket;
     if (bound !== canonical(socket)) throw new Error(`Workspace ${name} is bound to ${bound}, not ${canonical(socket)}`);
@@ -74,7 +74,22 @@ export function locked(name, env, fn) {
   finally { if (fd !== undefined) fs.closeSync(fd); fs.rmSync(path, { force: true }); }
 }
 
+// The workspace side's tmux. The registry (runtime.js) keeps its own: it is bundled into the Pi
+// extension and must fail fast, while save and restore run from tmux and may take longer.
+
 /** tmux on exactly this socket; -u keeps tabs unescaped in format output. */
 export function tmux(socket, args, { env = process.env } = {}) {
   return spawnSync("tmux", ["-u", "-S", socket, ...args], { env, encoding: "utf8", timeout: 10000 });
 }
+
+/** As tmux(), but its output, or an error if tmux failed. */
+export function tmuxOut(socket, args, { env = process.env } = {}) {
+  const r = tmux(socket, args, { env });
+  if (r.status !== 0) throw new Error(`tmux ${args[0]} failed: ${r.stderr.trim()}`);
+  return r.stdout.replace(/\n$/, "");
+}
+
+export const option = (socket, name, { env = process.env } = {}) => tmux(socket, ["show-option", "-gqv", name], { env }).stdout.trim();
+
+export const SEP = "\t"; // tmux escapes other control characters in format output
+export const rows = (text) => text.split("\n").filter(Boolean).map((l) => l.split(SEP));

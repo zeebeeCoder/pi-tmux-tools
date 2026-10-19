@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { plan, agentFor, subagentsDir, quote, resumeCommand, liveness } from "../src/scope-state.js";
+import { agentFor, subagentsDir } from "../src/recovery-point.js";
+import { plan, quote, resumeCommand, liveness } from "../src/restore.js";
 
-const dir = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "scope-state-")));
+const dir = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "restore-")));
 const conv = (name, cwd = dir) => {
   const file = join(dir, name + ".jsonl");
   fs.writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: name, cwd }) + "\n" + JSON.stringify({ type: "message" }) + "\n");
