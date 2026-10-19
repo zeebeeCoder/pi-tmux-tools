@@ -73,58 +73,64 @@ inference. Display controls are escaped and inherited `FZF_*` configuration is
 removed. Working is yellow, idle blue, attention amber, unknown grey. Idle never
 means accepted work. Refresh explicitly: ages and activity are snapshots.
 
-## Scopes
+## Managed workspaces
 
-A scope is any non-default tmux server: `tmux -L acme`. Each server is separate, so
-`choose-tree`, tmux-fzf and the agent picker show only that scope's sessions and agents.
-Everything is plain tmux; there is no extra CLI. Source `tmux/scope.conf` once, last, from
-your tmux configuration; it changes nothing on the default server.
+A managed workspace is a tmux server whose layout and agents survive the server ending: a
+crash, `kill-server` or reboot. Every server, the default one included, follows the same rules;
+only presentation differs. Everything is plain tmux, with no extra CLI. Source `tmux/scope.conf`
+once, last, from your tmux configuration.
 
-### Everyday use
+- **Workspaces are servers.** `tmux` is the default workspace; `tmux -L acme` is workspace
+  "acme". Each server is separate, so `choose-tree`, tmux-fzf and the agent picker show only
+  that workspace. Named workspaces show their name in the status bar (amber block) and the
+  window title; the default server shows nothing extra.
+- **Opt in with `prefix C-s`.** The first explicit save adopts the server as a managed
+  workspace, bound to that exact socket. Unmanaged servers are never saved or restored, so a
+  socket alone is never permission to manage a server.
+- **Saving:** `prefix C-s` any time; managed workspaces also save when a client detaches and
+  every five minutes while attached.
+- **Restoring:** when a managed workspace's server starts (`tmux`, `tmux -L acme`), its last
+  recovery point is rebuilt: sessions, windows, splits, directories, then each saved Pi and
+  Claude is resumed in its pane and checked to have re-registered with its exact conversation.
+  A status-line message reports how many agents resumed. It runs once per server start, never
+  on a config reload. `PI_TMUX_SCOPE_FRESH=1 tmux -L acme` starts empty instead.
 
 ```sh
-tmux -L acme                 # start or come back to scope "acme" (restores it if it was gone)
-tmux -L acme attach          # attach to a running scope
-tmux -L acme ls              # its sessions
-tmux -L acme kill-server     # end it (save first: prefix C-s)
-tmux attach                  # the default server, as before
+tmux -L acme                 # start or come back to workspace "acme"
+tmux -L acme attach          # attach to it while it runs
+tmux -L acme kill-server     # end it; the next start restores it
 ```
 
-- **Where am I?** The amber block in the status bar and `[acme]` in the window title. No
-  block means the default server.
-- **Saving** happens every five minutes while a client is attached, whenever a client
-  detaches, and on `prefix C-s`.
-- **Restoring** happens when a scope server starts and the scope has a save, e.g. after a
-  crash, `kill-server` or reboot. The start-up session is replaced by the saved sessions,
-  windows, splits and directories, and each saved agent is resumed in its pane. A message
-  in the status line summarises it. Restore runs once per server start, never on a config
-  reload, and never replaces a session already in use. To start a scope empty instead:
-  `PI_TMUX_SCOPE_FRESH=1 tmux -L acme`.
-- **Moving between scopes:** detach (`prefix d`) and attach to another, or attach from
-  another terminal.
+### Guarantees and limits
 
-### What is saved and restored
+- **Existing work is never disposable.** Restore replaces only the session tmux created when
+  the server started (auto-numbered, created with the server, one shell pane, nothing started
+  in it). Named sessions and sessions in use are kept; a saved session whose name is taken is
+  reported, not merged.
+- **No guessing, no doubles.** An agent is launched only when its saved process is proven gone
+  (only "no such process" counts; unobservable means not launched), its directory exists, and
+  its conversation reference checks out: Pi by exact file and header, Claude by exact session
+  ID with its transcript present. Each conversation is launched at most once. pi-subagent
+  conversations stay with pi-subagent, and subagent-only sessions are not recreated.
+- **The last good recovery point survives a partial restore.** If any agent was not resumed or
+  not verified, the workspace is marked degraded (`!` in the badge): automatic saves pause until
+  you accept the current state with `prefix C-s`. Older recovery points are kept (last 50).
+- **One operation at a time.** Saves and restores take a per-workspace lock; topology that
+  changes during a save refuses the save rather than recording a mix.
+- **Reported, not assumed.** `last-restore.json` lists what was launched, what verified, and
+  every gap; errors go to `errors.log`. Both are in `~/.local/state/tmux/scopes/<name>/`.
 
-A save records sessions, windows (names, layouts), panes (directories) and, per pane, the
-exact agent conversation from the strict registry. It never records commands, pane
-contents, transcripts or environments. Saves live in `~/.local/state/tmux/scopes/<name>/`
-(`snapshots/`, last 50 kept; `latest.json`). Restore types `pi --session <exact file>` or
-`claude --resume <exact session id>` into the saved panes, using your normal agent setup;
-no prompt is sent. Launch flags such as permission modes are not saved, so agents come
-back with your defaults. Plain panes come back as shells in their directories.
+Saves record sessions, window names and layouts, pane directories and exact agent references.
+They never record commands, pane contents, transcripts or environments. Agents come back with
+your normal setup, without launch flags such as permission modes, and no prompt is sent. This
+is reconstruction, not process checkpointing: shell state, scrollback and interrupted tool
+calls are not restored. Named workspaces do not load Resurrect/Continuum. On the default
+server, `prefix C-s` belongs to managed workspaces once this config is loaded.
 
-Explained gaps instead of launches (listed in `last-restore.json`): pi-subagent
-conversations (owned by pi-subagent), agents not persisted at save time, missing or
-mismatched conversation files (Claude: missing transcript), a saved agent process that is
-still running, and sessions whose name is already in use. Each conversation is launched at
-most once. Saving is refused while a restore runs. Errors go to `errors.log` in the scope home.
-
-Scope servers do not load Resurrect/Continuum; scopes use their own snapshots. tmux calls
-`bin/tmux-scope.js` (save, autosave, restore); it is not meant to be run by hand.
-
-`node test/manual/verify-scopes.js [--keep]` smoke-tests all of this with real offline Pi on
-ephemeral servers in a private sandbox. A guard `tmux` refuses any call targeting a socket
-outside the sandbox, and the run checks the real default server's PID is unchanged.
+`node test/manual/verify-scopes.js [--keep]` exercises the same contract on a named workspace and
+on a sandbox `default` server, with real offline Pi, under both a fixture config and the user's
+tmux config. A guard `tmux` refuses any socket outside the sandbox, and the run checks the real
+default server's PID is unchanged.
 
 ## Ownership, privacy and activity
 
@@ -169,7 +175,7 @@ References come from native hook file/ID fields. Claude file checks do not read
 transcript bodies and always leave recovery identity/integrity unverified.
 Turn/tool/permission/idle coverage is synthetic; native lifecycle coverage is
 limited. The lab adapter in `src/recovery/` does not recover Claude; scope restore resumes
-Claude by exact session ID (see Scopes). No native Claude/auth experiment is
+Claude by exact session ID (see Managed workspaces). No native Claude/auth experiment is
 part of the offline suite.
 
 ## Development and verification

@@ -152,62 +152,66 @@ function variant(label, base, { sourcesScope = false } = {}) {
   const conf = join(sandbox, `${label}.conf`);
   // Sourcing scope.conf twice in one load is unsupported; a config that already sources it is tested as-is.
   fs.writeFileSync(conf, sourcesScope ? `${base}\n` : `${base}\nsource-file '${scopeConf}'\n`);
-  const env = sandboxEnv(sandbox, conf);
+  // Each variant gets its own workspace homes; the default workspace is not shared between them.
+  const env = { ...sandboxEnv(sandbox, conf), PI_TMUX_SCOPES_HOME: join(sandbox, "scopes", label) };
   const t = (name, ...a) => spawnSync(guardTmux(sandbox), ["-u", "-f", conf, "-S", sock(sandbox, name), ...a], { env, encoding: "utf8" });
   const out = (name, ...a) => t(name, ...a).stdout.trim();
-  // What tmux runs for prefix C-s, the detach hook and the status-line autosave.
+  // What tmux runs for prefix C-s, the detach hook, the status-line autosave and server start.
   const bin = (cmd, name, extra = {}) => spawnSync(process.execPath, [scopeBin, cmd, sock(sandbox, name)], { env: { ...env, ...extra }, encoding: "utf8" });
-  const settled = (name) => waitFor(() => out(name, "show", "-gv", "@scope-started") === "1" && out(name, "show", "-gqv", "@scope-restoring") === "", 15000);
+  const settled = (name) => waitFor(() => out(name, "show", "-gv", "@scope-started") === "1" && out(name, "show", "-gqv", "@scope-restoring") === "", 45000);
   const [a, b] = [`${label}-a`, `${label}-b`];
   const fakeDefault = "default"; // only ever as SANDBOX/run/tmux-UID/default
 
-  check(label, "plain `tmux new-session` starts a scope; with no save nothing is restored", () => {
-    t(a, "new-session", "-d", "-s", "main");
-    return { ok: !!settled(a) && out(a, "list-sessions", "-F", "#S") === "main" && !fs.existsSync(join(sandbox, "scopes", a, "last-restore.json")), detail: out(a, "list-sessions", "-F", "#S") };
+  check(label, "plain `tmux new-session` starts a server; an unmanaged one is left alone", () => {
+    t(a, "new-session", "-d", "-s", "main"); settled(a);
+    bin("autosave", a); bin("detach", a);
+    return { ok: out(a, "list-sessions", "-F", "#S") === "main" && !fs.existsSync(join(env.PI_TMUX_SCOPES_HOME, a)), detail: out(a, "list-sessions", "-F", "#S") };
   });
-  t(fakeDefault, "new-session", "-d", "-s", "main");
-  check(label, "indicator shows the scope in status bar and title", () => {
+  t(fakeDefault, "new-session", "-d", "-s", "main"); settled(fakeDefault);
+  check(label, "named workspace shows its name in status bar and title", () => {
     const s = out(a, "display", "-p", "-t", "main", "#{E:status-left}"), title = out(a, "display", "-p", "-t", "main", "#{E:set-titles-string}");
     return { ok: s.includes(` ${a} `) && title.startsWith(`[${a}] `), detail: `${s} | ${title}` };
   });
-  check(label, "sandbox default server is untouched by scope.conf", () => {
-    const raw = out(fakeDefault, "show", "-gv", "status-left"), right = raw + out(fakeDefault, "show", "-gv", "status-right");
-    const opts = ["@scope-name", "@scope-bin", "@scope-started", "@scope-restoring"].map((o) => out(fakeDefault, "show", "-gqv", o)).join("");
+  check(label, "default server: no badge or title, but the same save/restore wiring", () => {
+    const raw = out(fakeDefault, "show", "-gv", "status-left"), title = out(fakeDefault, "show", "-gv", "set-titles-string");
     const keys = out(fakeDefault, "list-keys", "-T", "prefix", "C-s"), hooks = out(fakeDefault, "show-hooks", "-g", "client-detached");
-    return { ok: raw !== "" && !raw.includes("@scope-name") && !right.includes("@scope-bin") && opts === "" && !keys.includes("@scope-bin") && !hooks.includes("@scope-bin"), detail: `${opts} ${keys} ${hooks}` };
+    return { ok: !raw.includes("@scope-name") && !title.includes("@scope-name") && [raw, keys, hooks].every((x) => x.includes("@scope-bin")), detail: `${raw} | ${keys} | ${hooks}` };
   });
-  check(label, "the save script refuses the default server", () => bin("save", fakeDefault).status === 1);
-  check(label, "scope servers save on prefix C-s, on detach and from the status line", () => {
-    const keys = out(a, "list-keys", "-T", "prefix", "C-s"), hooks = out(a, "show-hooks", "-g", "client-detached"), right = out(a, "show", "-gv", "status-left");
-    return { ok: [keys, hooks, right].every((x) => x.includes("@scope-bin")) && /autosave/.test(right) && out(a, "show", "-gv", "@scope-bin") === scopeBin.replace(/bin\/tmux-scope\.js$/, "tmux/../bin/tmux-scope.js"), detail: `${keys} | ${hooks} | ${right} | ${out(a, "show", "-gv", "@scope-bin")}` };
+  check(label, "workspaces save on prefix C-s, on detach and from the status line", () => {
+    const keys = out(a, "list-keys", "-T", "prefix", "C-s"), hooks = out(a, "show-hooks", "-g", "client-detached"), left = out(a, "show", "-gv", "status-left");
+    return { ok: [keys, hooks, left].every((x) => x.includes("@scope-bin")) && /autosave/.test(left) && /detach/.test(hooks), detail: `${keys} | ${hooks}` };
   });
-  check(label, "indicator, autosave and hooks stay single across config reloads", () => {
-    t(a, "source-file", conf); t(a, "source-file", conf);
-    const raw = out(a, "show", "-gv", "status-left"), title = out(a, "show", "-gv", "set-titles-string");
-    return { ok: raw.split("@scope-name").length === 2 && raw.split("@scope-bin").length === 2 && title.split("@scope-name").length === 2, detail: raw };
+  check(label, "badge, autosave and hooks stay single across config reloads", () => {
+    t(a, "source-file", conf); t(a, "source-file", conf); t(fakeDefault, "source-file", conf);
+    const raw = out(a, "show", "-gv", "status-left"), title = out(a, "show", "-gv", "set-titles-string"), d = out(fakeDefault, "show", "-gv", "status-left");
+    return { ok: raw.split("@scope-name").length === 2 && raw.split("@scope-bin").length === 2 && title.split("@scope-name").length === 2 && d.split("@scope-bin").length === 2, detail: raw };
   });
-  check(label, "two scopes see only their own sessions", () => {
+  check(label, "two servers see only their own sessions", () => {
     t(b, "new-session", "-d", "-s", "main"); settled(b);
     t(a, "new-session", "-d", "-s", "api");
     const sa = out(a, "list-sessions", "-F", "#S"), sb = out(b, "list-sessions", "-F", "#S");
     return { ok: sa === "api\nmain" && sb === "main", detail: `${a}: ${sa.replace("\n", ",")} ${b}: ${sb}` };
   });
-  check(label, "scope servers do not load Resurrect/Continuum (no shared saves)", () => {
+  check(label, "named workspaces do not load Resurrect/Continuum (no shared saves)", () => {
     const keys = out(a, "list-keys", "-T", "prefix"), right = out(a, "show", "-gv", "status-right");
     return { ok: keys !== "" && !/resurrect/.test(keys) && !/continuum/.test(right), detail: right };
   });
-  recovery(label, conf, env, t, out, bin, settled);
-  if (!keep) for (const n of [a, b, `${label}-r`, fakeDefault]) t(n, "kill-server");
+  if (!keep) for (const n of [a, b]) t(n, "kill-server");
+  t(fakeDefault, "kill-server"); waitFor(() => !answers(sandbox, sock(sandbox, fakeDefault)), 5000);
+  // The same recovery contract, on a named workspace and on the default server.
+  recovery(label, `${label}-r`, conf, env, t, out, bin, settled);
+  recovery(`${label}/default`, fakeDefault, conf, env, t, out, bin, settled);
+  if (!keep) for (const n of [`${label}-r`, fakeDefault]) t(n, "kill-server");
 }
 
-function recovery(label, conf, env, t, out, bin, settled) {
-  const r = `${label}-r`, work = join(sandbox, "work", label), proj = join(work, "proj"), other = join(work, "other");
+function recovery(label, r, conf, env, t, out, bin, settled) {
+  const tag = label.replace("/", "-"), work = join(sandbox, "work", tag), proj = join(work, "proj"), other = join(work, "other");
   for (const d of [proj, other]) fs.mkdirSync(d, { recursive: true });
-  const A = invented(join(work, "histories", "A.jsonl"), `${label}-conv-A`, proj);
-  const B = invented(join(work, "histories", "B.jsonl"), `${label}-conv-B`, proj);
-  const SUB = invented(join(sandbox, "agent", "subagents", `${label}h1`, "session.jsonl"), `${label}-conv-sub`, proj);
-  const scopeHome = join(sandbox, "scopes", r);
-  const report = () => { try { return JSON.parse(fs.readFileSync(join(scopeHome, "last-restore.json"), "utf8")); } catch { return null; } };
+  const A = invented(join(work, "histories", "A.jsonl"), `${tag}-conv-A`, proj);
+  const B = invented(join(work, "histories", "B.jsonl"), `${tag}-conv-B`, proj);
+  const SUB = invented(join(sandbox, "agent", "subagents", `${tag}h1`, "session.jsonl"), `${tag}-conv-sub`, proj);
+  const wsHome = join(env.PI_TMUX_SCOPES_HOME, r), pointer = join(wsHome, "latest.json");
+  const report = () => { try { return JSON.parse(fs.readFileSync(join(wsHome, "last-restore.json"), "utf8")); } catch { return null; } };
   const inspectRows = () => {
     const res = spawnSync(process.execPath, [join(repo, "bin/inspect.js"), "inspect", "--socket", sock(sandbox, r), "--json"], { env, encoding: "utf8" });
     try { return JSON.parse(res.stdout).panes ?? []; } catch { return []; }
@@ -224,9 +228,10 @@ function recovery(label, conf, env, t, out, bin, settled) {
     t(r, "kill-server");
     return { pids, gone: waitFor(() => !answers(sandbox, sock(sandbox, r)) && pids.every((pid) => spawnSync("kill", ["-0", String(pid)]).status !== 0), 15000) };
   };
+  const start = (...args) => { t(r, "new-session", "-d", ...args); return settled(r); };
 
-  // Build: window "agents" with two Pis sharing one cwd, a plain shell window, and a subagent pane.
-  t(r, "new-session", "-d", "-s", "main", "-c", proj); settled(r);
+  // Build: window "agents" with two Pis sharing one cwd, a plain shell window, and a subagent-only session.
+  start("-s", "main", "-c", proj);
   t(r, "rename-window", "-t", "main:", "agents");
   const p2 = out(r, "split-window", "-h", "-P", "-F", "#{pane_id}", "-t", "main:agents", "-c", proj);
   const p1 = out(r, "list-panes", "-t", "main:agents", "-F", "#{pane_id}").split("\n")[0];
@@ -235,22 +240,22 @@ function recovery(label, conf, env, t, out, bin, settled) {
   out(r, "new-session", "-d", "-s", "side", "-c", proj);
   runPi("side:", SUB);
   const registered = waitFor(() => Object.keys(agents()).length === 3);
-  check(label, "setup: three Pis register in the scope (two share a cwd, one subagent)", () => ({ ok: !!registered, detail: JSON.stringify(Object.keys(agents())) }));
+  check(label, "setup: three Pis register (two share a cwd, one subagent)", () => ({ ok: !!registered, detail: JSON.stringify(Object.keys(agents())) }));
 
-  check(label, "save (prefix C-s) records topology and two resumable Pi conversations", () => {
-    const res = bin("save", r), snap = JSON.parse(fs.readFileSync(join(scopeHome, "snapshots", JSON.parse(fs.readFileSync(join(scopeHome, "latest.json"), "utf8")).file), "utf8"));
+  check(label, "first prefix C-s adopts the workspace and records two resumable Pis", () => {
+    const res = bin("save", r), snap = JSON.parse(fs.readFileSync(join(wsHome, "snapshots", JSON.parse(fs.readFileSync(pointer, "utf8")).file), "utf8"));
     const kinds = snap.sessions.flatMap((s) => s.windows.flatMap((w) => w.panes.map((p) => p.agent?.kind ?? "shell"))).sort().join(",");
-    return { ok: res.status === 0 && kinds === "pi,pi,pi-subagent,shell", detail: kinds + res.stderr };
+    return { ok: res.status === 0 && fs.existsSync(join(wsHome, "workspace.json")) && kinds === "pi,pi,pi-subagent,shell", detail: kinds + res.stderr };
   });
   const expectedLayout = layoutOf(), expectedFiles = filesByPosition();
   check(label, "saving is refused while a restore is running", () => {
-    const pointer = join(scopeHome, "latest.json"), before = fs.readFileSync(pointer, "utf8");
+    const before = fs.readFileSync(pointer, "utf8");
     t(r, "set", "-g", "@scope-restoring", "1"); spawnSync("sleep", ["1.1"]);
     bin("save", r); t(r, "set", "-gu", "@scope-restoring");
     return fs.readFileSync(pointer, "utf8") === before;
   });
   check(label, "autosave is throttled to five minutes", () => {
-    const pointer = join(scopeHome, "latest.json"), before = fs.readFileSync(pointer, "utf8");
+    const before = fs.readFileSync(pointer, "utf8");
     bin("autosave", r);
     const throttled = fs.readFileSync(pointer, "utf8") === before;
     fs.utimesSync(pointer, new Date(0), new Date(0)); spawnSync("sleep", ["1.1"]);
@@ -260,59 +265,63 @@ function recovery(label, conf, env, t, out, bin, settled) {
 
   let { pids: oldPids, gone } = crash();
   check(label, "crash: server and its Pi processes are gone", () => !!gone);
-  t(r, "new-session", "-d");
-  settled(r);
-  check(label, "plain `tmux new-session` restores the scope and drops the empty bootstrap session", () => {
+  start();
+  check(label, "`tmux new-session` restores; agents verified; start-up session replaced; subagent session not recreated", () => {
     const rep = report(), sessions = out(r, "list-sessions", "-F", "#S");
-    return { ok: rep?.launched.length === 2 && rep.gaps.some((g) => g.kind === "pi-subagent") && sessions === "main\nside", detail: `${sessions} ${JSON.stringify(rep)}` };
+    return { ok: rep?.launched.length === 2 && rep.launched.every((l) => l.verified) && !rep.degraded && rep.gaps.some((g) => g.kind === "pi-subagent") && sessions === "main", detail: `${sessions} ${JSON.stringify(rep)}` };
   });
-  check(label, "same sessions, window names, panes, directories and geometry", () => {
-    const now = layoutOf();
-    return { ok: now === expectedLayout, detail: `expected:\n${expectedLayout}\nnow:\n${now}` };
+  check(label, "same windows, panes, directories and geometry", () => {
+    const now = layoutOf(), want = expectedLayout.split("\n").filter((l) => !l.startsWith("side:")).join("\n");
+    return { ok: now === want, detail: `expected:\n${want}\nnow:\n${now}` };
   });
-  const resumed = waitFor(() => { const f = filesByPosition(); return Object.keys(f).length === 2 ? f : null; });
   check(label, "the same exact conversations run again in the same panes, as new processes", () => {
     const want = Object.fromEntries(Object.entries(expectedFiles).filter(([, f]) => !f.includes("/subagents/")));
-    const newPids = Object.values(agents()).map((x) => x.process.pid);
-    return { ok: JSON.stringify(resumed) === JSON.stringify(want) && newPids.every((p) => !oldPids.includes(p)), detail: `${JSON.stringify(resumed)} vs ${JSON.stringify(want)}` };
-  });
-  check(label, "subagent and plain shell panes come back as shells", () => {
-    const rows = inspectRows(), ids = Object.fromEntries(out(r, "list-panes", "-a", "-F", "#{pane_id} #{session_name}:#{window_name}").split("\n").map((l) => l.split(" ")));
-    const shells = rows.filter((x) => ids[x.pane.pane] === "main:shell" || ids[x.pane.pane]?.startsWith("side:"));
-    return { ok: shells.length === 2 && shells.every((x) => x.status === "unregistered"), detail: JSON.stringify(shells.map((x) => x.status)) };
+    const now = filesByPosition(), newPids = Object.values(agents()).map((x) => x.process.pid);
+    return { ok: JSON.stringify(now) === JSON.stringify(want) && newPids.every((p) => !oldPids.includes(p)), detail: `${JSON.stringify(now)} vs ${JSON.stringify(want)}` };
   });
   check(label, "reloading the config never restores again", () => {
     const before = out(r, "list-panes", "-a", "-F", "#{pane_id}:#{pane_pid}"), rep = report()?.restoredAt;
     t(r, "source-file", conf); spawnSync("sleep", ["1.5"]);
-    const after = out(r, "list-panes", "-a", "-F", "#{pane_id}:#{pane_pid}");
-    return { ok: after === before && report()?.restoredAt === rep, detail: `${before} -> ${after}; report ${rep} -> ${report()?.restoredAt}` };
+    return { ok: out(r, "list-panes", "-a", "-F", "#{pane_id}:#{pane_pid}") === before && report()?.restoredAt === rep, detail: rep };
   });
 
-  ({ pids: oldPids, gone } = crash());
+  ({ gone } = crash());
+  t(r, "new-session", "-d", "-s", "work");
+  settled(r);
+  check(label, "a named session at start is kept; saved sessions are added beside it", () => {
+    const sessions = out(r, "list-sessions", "-F", "#S"), rep = report();
+    return { ok: sessions === "main\nwork" && rep?.launched.length === 2, detail: sessions };
+  });
+
+  ({ gone } = crash());
   t(r, "new-session", "-d", "-s", "main", ";", "split-window", "-d");
   settled(r);
-  check(label, "a session already in use at start is kept, never overwritten", () => {
+  check(label, "a session already in use at start is never overwritten", () => {
     const rep = report(), panes = out(r, "list-panes", "-t", "main:", "-F", "#{pane_id}").split("\n").length;
-    return { ok: panes === 2 && rep?.gaps.some((g) => g.kind === "session" && g.where === "main") && out(r, "list-sessions", "-F", "#S") === "main\nside", detail: JSON.stringify(rep?.gaps) };
+    return { ok: panes === 2 && rep?.gaps.some((g) => g.kind === "session" && g.where === "main") && rep.launched.length === 0, detail: JSON.stringify(rep?.gaps) };
+  });
+  check(label, "a partial restore pauses automatic saving, so the last good point survives", () => {
+    const before = fs.readFileSync(pointer, "utf8");
+    fs.utimesSync(pointer, new Date(0), new Date(0)); spawnSync("sleep", ["1.1"]);
+    bin("autosave", r); bin("detach", r);
+    return { ok: out(r, "show", "-gqv", "@scope-degraded") !== "" && report()?.degraded && fs.readFileSync(pointer, "utf8") === before, detail: out(r, "show", "-gqv", "@scope-degraded") };
   });
 
-  ({ pids: oldPids, gone } = crash());
-  t(r, "new-session", "-d");
-  settled(r);
-  waitFor(() => Object.keys(filesByPosition()).length === 2);
-  bin("save", r); // a save of the bootstrap-free restored server, still with both Pis
   ({ gone } = crash());
   fs.renameSync(B.file, B.file + ".moved");
-  t(r, "new-session", "-d");
-  settled(r);
+  start();
   fs.renameSync(B.file + ".moved", B.file);
-  check(label, "a missing conversation file becomes an explained gap; the rest restores", () => {
-    const rep = report(), one = waitFor(() => Object.keys(filesByPosition()).length === 1);
-    return { ok: rep?.launched.length === 1 && rep.gaps.some((g) => /missing-exact-file/.test(g.reason)) && !!one, detail: JSON.stringify(rep) };
+  check(label, "a missing conversation file is an explained gap; the rest restores", () => {
+    const rep = report();
+    return { ok: rep?.launched.length === 1 && rep.launched[0].verified && rep.gaps.some((g) => /missing-exact-file/.test(g.reason)) && rep.degraded, detail: JSON.stringify(rep) };
+  });
+  check(label, "prefix C-s accepts the partial state and resumes automatic saving", () => {
+    const res = bin("save", r);
+    return { ok: res.status === 0 && out(r, "show", "-gqv", "@scope-degraded") === "", detail: res.stderr };
   });
 
   ({ gone } = crash());
-  check(label, "PI_TMUX_SCOPE_FRESH=1 starts the scope empty", () => {
+  check(label, "PI_TMUX_SCOPE_FRESH=1 starts the workspace empty", () => {
     spawnSync(guardTmux(sandbox), ["-u", "-f", conf, "-S", sock(sandbox, r), "new-session", "-d", "-s", "main"], { env: { ...env, PI_TMUX_SCOPE_FRESH: "1" } });
     settled(r);
     return { ok: out(r, "list-sessions", "-F", "#S") === "main" && out(r, "list-panes", "-a", "-F", "#{pane_id}").split("\n").length === 1, detail: out(r, "list-sessions", "-F", "#S") };
@@ -321,8 +330,15 @@ function recovery(label, conf, env, t, out, bin, settled) {
 
 try {
 variant("fixture", `set -g status-left '#[fg=#{?client_prefix,red,green}] #S '\nset -g set-titles-string '#S:#W'\nset -g automatic-rename off\nset -g allow-rename off`);
-const userSourcesScope = () => [userConf, join(homedir(), ".config/tmux/tmux.conf")].some((f) => fs.existsSync(f) && fs.readFileSync(f, "utf8").includes("pi-tmux-continuity/tmux/scope.conf"));
-if (withUserConfig) variant("user", `source-file '${userConf}'`, { sourcesScope: userSourcesScope() });
+// The live config may source a different checkout's scope.conf; test a copy that sources this one.
+function userBase() {
+  const main = join(homedir(), ".config/tmux/tmux.conf");
+  if (!fs.existsSync(main) || !/^\s*source-file\s+\S*\/tmux\/scope\.conf\s*$/m.test(fs.readFileSync(main, "utf8"))) return { base: `source-file '${userConf}'`, sourcesScope: false };
+  const copy = join(sandbox, "user-tmux.conf");
+  fs.writeFileSync(copy, fs.readFileSync(main, "utf8").replace(/^\s*source-file\s+\S*\/tmux\/scope\.conf\s*$/m, `source-file '${scopeConf}'`));
+  return { base: `source-file '${copy}'`, sourcesScope: true };
+}
+if (withUserConfig) { const u = userBase(); variant("user", u.base, { sourcesScope: u.sourcesScope }); }
 else console.log(`SKIP  [user] ${fs.existsSync(userConf) ? "--no-user-config" : "no ~/.tmux.conf"}`);
 } catch (e) {
   results.push({ variant: "harness", name: "harness error", ok: false, detail: e.stack });
