@@ -13,7 +13,6 @@ picker. Registration/navigation does **not** save workspaces or launch agents;
   certified here. Foreground process-group leadership, pane TTY and ancestry
   must be verifiable; uncertain wrappers/background processes are refused.
 - Picker additionally requires `/opt/homebrew/bin/fzf` (tested with 0.65.1).
-  Recovery uses machine-specific macOS tool/plugin paths; see its runbook.
 
 No runtime npm dependencies: the host supplies Pi. From a disposable tmux pane:
 
@@ -22,8 +21,9 @@ pi -e /absolute/path/to/pi-tmux-continuity
 # Or use the generated root extension.ts, not src/extension.ts.
 ```
 
-This is opt-in for that invocation, not a global install. Nothing installs hooks,
-keybindings, timers or daemons. Outside tmux, noninteractive/print/JSON/RPC modes
+This is opt-in for that invocation, not a global install. The extension installs no hooks,
+keybindings, timers or daemons; managed workspaces add a key binding, a detach hook and a
+status-line autosave only where you source `tmux/scope.conf`. Outside tmux, noninteractive/print/JSON/RPC modes
 and redirected streams are inactive. Normal TUI operation is silent;
 `/tmux-binding` shows registration/activity diagnostics without a model prompt.
 
@@ -96,7 +96,7 @@ once, last, from your tmux configuration.
 ```sh
 tmux -L acme                 # start or come back to workspace "acme"
 tmux -L acme attach          # attach to it while it runs
-tmux -L acme kill-server     # end it; the next start restores it
+tmux -L acme kill-server     # end it; the next start restores its last recovery point
 ```
 
 ### Guarantees and limits
@@ -112,18 +112,26 @@ tmux -L acme kill-server     # end it; the next start restores it
   conversations stay with pi-subagent, and subagent-only sessions are not recreated.
 - **The last good recovery point survives a partial restore.** If any agent was not resumed or
   not verified, the workspace is marked degraded (`!` in the badge): automatic saves pause until
-  you accept the current state with `prefix C-s`. Older recovery points are kept (last 50).
+  you accept the current state with `prefix C-s`. The last 50 recovery points are kept (about
+  four hours of autosaves).
 - **One operation at a time.** Saves and restores take a per-workspace lock; topology that
   changes during a save refuses the save rather than recording a mix.
 - **Reported, not assumed.** `last-restore.json` lists what was launched, what verified, and
   every gap; errors go to `errors.log`. Both are in `~/.local/state/tmux/scopes/<name>/`.
 
+Known gaps:
+- A Pi whose directory or session path contains anything but letters, digits, `_`, `.`, `-`
+  and `/`, or passes through a symlink, is saved but not resumed (reported as a gap). This
+  includes iCloud Drive (`Mobile Documents/com~apple~CloudDocs`) and Google Drive (`My Drive`).
+- Windows come back numbered consecutively from `base-index`, not at their saved indices.
+- Autosave runs from the status line, so only while a client is attached; detaching saves first.
+
 Saves record sessions, window names and layouts, pane directories and exact agent references.
 They never record commands, pane contents, transcripts or environments. Agents come back with
 your normal setup, without launch flags such as permission modes, and no prompt is sent. This
 is reconstruction, not process checkpointing: shell state, scrollback and interrupted tool
-calls are not restored. Named workspaces do not load Resurrect/Continuum. On the default
-server, `prefix C-s` belongs to managed workspaces once this config is loaded.
+calls are not restored. Workspaces do not use tmux-resurrect. Because `tmux/scope.conf` loads
+last, `prefix C-s` is the workspace save on every server, replacing Resurrect's binding there.
 
 `node test/manual/verify-scopes.js [--keep]` exercises the same contract on a named workspace and
 on a sandbox `default` server, with real offline Pi, under both a fixture config and the user's
@@ -177,6 +185,18 @@ No native Claude/auth experiment is part of the offline suite.
 
 ## Development and verification
 
+How the parts fit, each depending only on those above it:
+
+| Module | Promise |
+|---|---|
+| `src/logic.js`, `src/runtime.js`, `src/claude.js` | Registry: each pane's exact conversation, proven by process ancestry and TTY |
+| `src/display.js`, `src/picker*.js` | Navigation: recorded, unverified status for the picker |
+| `src/workspace.js` | A workspace's identity, opt-in, lock and tmux calls |
+| `src/resumable.js` | Whether a saved Pi or Claude reference can be resumed exactly |
+| `src/recovery-point.js` | Capture and save topology plus agent bindings |
+| `src/restore.js` | Plan, rebuild and verify a restore |
+| `tmux/scope.conf`, `bin/tmux-scope.js` | The tmux wiring and the entry point it calls |
+
 The checked-in root bundle is essential; modular `src/` is authoritative.
 Dev-only esbuild is pinned in the lockfile. For a new development checkout,
 `npm ci --legacy-peer-deps` supplies the bundler without installing another Pi.
@@ -199,8 +219,6 @@ The workspace smoke writes ignored verification output under `evidence/`; no
 checked-in report is required.
 
 `node test/benchmark-picker.js LABEL` is an optional owned-fixture PTY benchmark.
-Historical spikes and their wrappers are excluded from the maintained test graph.
-The earlier Resurrect-based recovery adapter (`src/recovery/`, `bin/recovery.js`) was
-retired once managed workspaces replaced it; it is preserved at tag
+Tests/fixtures are in Git but not shipped in the npm runtime package. The earlier
+Resurrect-based recovery adapter was replaced by managed workspaces; it is kept at tag
 `archive/durable-recovery-lab`.
-Tests/fixtures are in Git but not shipped in the npm runtime package.

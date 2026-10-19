@@ -1,7 +1,7 @@
 {
   "name": "pi-tmux-continuity",
   "version": "0.1.0",
-  "description": "Exact Pi/Claude tmux registration, scoped activity and read-only inspection",
+  "description": "Exact Pi/Claude tmux registration, inspection, an agent picker and managed workspaces that restore tmux layouts with their exact agents",
   "type": "module",
   "keywords": [
     "pi-package"
