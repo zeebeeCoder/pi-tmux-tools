@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { inspect, processesFor } from "./runtime.js";
-import { exactReference } from "./recovery/model.js";
+import { piReference, claudeReference } from "./resumable.js";
 import { home, scopeOf, managed, adopt, locked, tmux } from "./scope.js";
 
 const KEEP = 50;
@@ -138,18 +138,6 @@ export function liveness(agents, probe = processesFor) {
   return states;
 }
 
-/**
- * Claude resumes by exact session ID (`claude --resume <id>`) in its saved directory.
- * Only the transcript's presence is checked; its contents are never read.
- */
-export function claudeReference(a) {
-  if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(a.id ?? "")) return "invalid-session-id";
-  if (!a.file || !fs.existsSync(a.file)) return "missing-transcript";
-  const st = fs.statSync(a.file);
-  if (!st.isFile() || st.size === 0) return "invalid-transcript";
-  return null;
-}
-
 /** The command typed into a restored pane; no prompt is ever passed. */
 export function resumeCommand(a, env = process.env) {
   return a.kind === "claude" ? `${env.PI_TMUX_SCOPE_CLAUDE || "claude"} --resume ${quote(a.id)}` : `${env.PI_TMUX_SCOPE_PI || "pi"} --session ${quote(a.file)}`;
@@ -173,7 +161,7 @@ export function plan(snapshot, env = process.env, observe = liveness) {
     if (seen.has(a.file)) { gap("same conversation already planned in another pane"); continue; }
     if (!isDir(a.cwd)) { gap(`directory ${a.cwd} is missing; not launched elsewhere`); continue; }
     let reason;
-    try { reason = a.kind === "claude" ? claudeReference(a) : exactReference(null, a); } catch { reason = "unsupported conversation path"; }
+    try { reason = a.kind === "claude" ? claudeReference(a) : piReference(a); } catch { reason = "unsupported conversation path"; }
     if (reason) { gap(`conversation not resumable: ${reason}`); continue; }
     seen.add(a.file);
     launches.set(p, a);

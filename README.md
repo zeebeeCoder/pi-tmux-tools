@@ -1,10 +1,8 @@
 # pi-tmux-continuity
 
 Exact Pi/Claude tmux registration, read-only inspection and an opt-in live-agent
-picker. Registration/navigation does **not** save workspaces or launch agents.
-A separate [bounded Pi recovery adapter](src/recovery/README.md) provides explicit
-paired saves and fresh-owned-server recovery. It is inactive by default, not a
-production workspace lifecycle.
+picker. Registration/navigation does **not** save workspaces or launch agents;
+[managed workspaces](#managed-workspaces) do that, opt-in per tmux server.
 
 ## Requirements and loading
 
@@ -174,9 +172,8 @@ Fork events are conservatively closed rather than attributed ambiguously.
 References come from native hook file/ID fields. Claude file checks do not read
 transcript bodies and always leave recovery identity/integrity unverified.
 Turn/tool/permission/idle coverage is synthetic; native lifecycle coverage is
-limited. The lab adapter in `src/recovery/` does not recover Claude; scope restore resumes
-Claude by exact session ID (see Managed workspaces). No native Claude/auth experiment is
-part of the offline suite.
+limited. Workspace restore resumes Claude by exact session ID (see Managed workspaces).
+No native Claude/auth experiment is part of the offline suite.
 
 ## Development and verification
 
@@ -190,7 +187,7 @@ npm run build              # regenerate extension.ts after source/build changes
 npm run check:bundle       # deterministic freshness check, no rewrite
 npm test                   # current unit tests (explicit maintained allowlist)
 npm run test:integration   # serialized, isolated offline Pi/tmux integrations
-node test/manual/verify-durable-recovery.js
+node test/manual/verify-scopes.js   # guarded sandbox smoke for managed workspaces
 npm pack --dry-run
 ```
 
@@ -198,23 +195,12 @@ Tests/pack check bundle freshness rather than silently rebuilding. Integration
 requires existing Pi, tmux, Python and picker fzf; it uses private HOME/agent
 directories, invented histories, offline Pi without prompts, and uniquely owned
 sockets. Claude integration uses a synthetic owner, not the native executable.
-The durable runner supplies an allowlisted environment, runs probe/unit/admission
-tests and a real-Pi new-process persistent-store round trip, and cleans owned
-servers/agents. Read the [recovery runbook](src/recovery/README.md) first. It writes
-ignored verification output under `evidence/`; no checked-in report is required.
+The workspace smoke writes ignored verification output under `evidence/`; no
+checked-in report is required.
 
 `node test/benchmark-picker.js LABEL` is an optional owned-fixture PTY benchmark.
 Historical spikes and their wrappers are excluded from the maintained test graph.
+The earlier Resurrect-based recovery adapter (`src/recovery/`, `bin/recovery.js`) was
+retired once managed workspaces replaced it; it is preserved at tag
+`archive/durable-recovery-lab`.
 Tests/fixtures are in Git but not shipped in the npm runtime package.
-
-## Recovery limits
-
-Recovery only owns explicitly created private stores/servers. Managed live or
-uncertain owners and unresolved generations block new-label recovery (DR-1).
-Existing/consumed addresses are attach-only; locks are never stolen and uncertain
-launches are not retried. No production server adoption, fixed-address lifecycle,
-attached-client capture, automatic saving or degraded-state resolution is supplied.
-At most one coordinator-issued launch attempt per conversation/owned generation
-is not machine-wide exclusivity. Header checks do not eliminate the file-open
-race. Filesystem synchronization is not reboot/power-loss certification. There is
-no installer, boot/login automation, Ghostty requirement or production activation.
