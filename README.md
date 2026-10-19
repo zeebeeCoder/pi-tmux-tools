@@ -80,10 +80,25 @@ session list, chooser and the agent picker show only that scope. Run from a plai
 terminal, not inside tmux:
 
 ```sh
-node bin/scope.js open acme      # attach; start with one shell session if not running
-node bin/scope.js list           # scopes and whether each server is live
-node bin/scope.js stop acme      # asks first; stops only that server, keeps its home
+node bin/scope.js open acme      # attach; if stopped, restore from the last save (or start empty)
+node bin/scope.js save acme      # save topology and exact agent conversations now
+node bin/scope.js list           # scopes, whether each server is live, last save
+node bin/scope.js stop acme      # asks first; saves, then stops only that server
+node bin/scope.js open acme --fresh   # start empty, ignoring the save
 ```
+
+A save records sessions, windows (names, layouts), panes (directories) and, per pane,
+the exact Pi conversation from the strict registry. No commands, pane contents,
+transcripts or environments. Saves live in the scope home (`snapshots/`, last 50 kept,
+`latest.json`). While a client is attached, the status line autosaves every five
+minutes. Restore runs only when the scope's server is not running: it rebuilds the
+topology on a fresh server and types `pi --session <exact file>` into each saved Pi
+pane, using your normal Pi setup; no prompt is sent. Plain panes come back as shells
+in their directories. Explained gaps instead of launches: Claude (resume not verified),
+pi-subagent conversations (owned by pi-subagent), agents not persisted at save time,
+missing/mismatched conversation files, and a saved Pi process that is still running.
+Each conversation is launched at most once per restore. `last-restore.json` records
+what was launched and every gap.
 
 A scope is defined by its home, `~/.local/state/tmux/scopes/<name>/`, not by socket
 files. Servers are addressed by exact socket path (`$TMUX_TMPDIR`, default `/tmp`,
@@ -93,8 +108,8 @@ default server. Opening a live scope only attaches.
 
 To show the scope in the status bar and terminal title, source `tmux/scope.conf` last
 from your tmux configuration. It changes nothing on the default server and is
-reload-safe. Scope servers do not load Resurrect/Continuum here: they have no saves and
-come back empty after their server ends. Per-scope paired save/recovery is not built yet.
+reload-safe; source it once. Scope servers do not load Resurrect/Continuum; scopes use
+their own snapshots instead.
 
 `node test/manual/verify-scopes.js [--keep]` smoke-tests scopes on ephemeral servers in a
 private sandbox. A guard `tmux` refuses any call targeting a socket outside the sandbox,

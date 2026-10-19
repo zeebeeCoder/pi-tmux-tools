@@ -57,7 +57,33 @@ function sandboxEnv(sandbox, conf) {
   return {
     PATH: `${join(sandbox, "bin")}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: homedir(), LC_ALL: "C", TERM: "xterm-256color",
     TMUX_TMPDIR: join(sandbox, "run"), PI_TMUX_SCOPES_HOME: join(sandbox, "scopes"), PI_TMUX_SCOPE_CONF: conf,
+    PI_TMUX_SCOPE_PI: join(sandbox, "bin", "pi-offline"), PI_CODING_AGENT_DIR: join(sandbox, "agent"),
   };
+}
+
+/** Offline Pi with a private agent dir and only this package's registrar; no model requests. */
+function writePi(sandbox) {
+  const agent = join(sandbox, "agent");
+  fs.mkdirSync(join(agent, "sessions"), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(join(sandbox, "home"), { mode: 0o700 });
+  fs.writeFileSync(join(agent, "settings.json"), JSON.stringify({ enableInstallTelemetry: false, enableAnalytics: false, cacheWarming: "off", compaction: { enabled: false }, retry: { enabled: false } }));
+  fs.writeFileSync(join(sandbox, "bin", "pi-offline"), `#!/bin/sh
+exec env PATH='${join(sandbox, "bin")}:/opt/homebrew/bin:/usr/bin:/bin' HOME='${join(sandbox, "home")}' PI_CODING_AGENT_DIR='${agent}' PI_OFFLINE=1 PI_TELEMETRY=0 PI_SKIP_VERSION_CHECK=1 \
+  /opt/homebrew/bin/pi --offline --no-extensions --no-mcp --no-skills --no-context-files --no-prompt-templates --no-themes --no-approve --no-tools \
+  --tui-mode regular -e '${join(repo, "extension.ts")}' --session-dir '${join(agent, "sessions")}' "$@"
+`, { mode: 0o700 });
+}
+
+/** Invented conversation (no real transcript); header id/cwd must match for exact resume. */
+function invented(file, id, cwd) {
+  fs.mkdirSync(resolve(file, ".."), { recursive: true, mode: 0o700 });
+  const timestamp = "2026-01-01T00:00:00.000Z";
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  fs.writeFileSync(file, [{ type: "session", version: 3, id, timestamp, cwd },
+    { type: "message", id: "aabb0001", parentId: null, timestamp, message: { role: "user", content: "Invented record " + id, timestamp: 1767225600000 } },
+    { type: "message", id: "aabb0002", parentId: "aabb0001", timestamp, message: { role: "assistant", content: [{ type: "text", text: "Invented answer." }], api: "openai-responses", provider: "openai", model: "gpt-4o", usage, stopReason: "stop", timestamp: 1767225600000 } },
+  ].map((x) => JSON.stringify(x)).join("\n") + "\n", { mode: 0o600 });
+  return { file, id, cwd };
 }
 const sockets = (sandbox) => fs.existsSync(runDir(sandbox)) ? fs.readdirSync(runDir(sandbox)).map((n) => sock(sandbox, n)) : [];
 const answers = (sandbox, socket) => spawnSync(guardTmux(sandbox), ["-S", socket, "list-sessions"], { stdio: "ignore" }).status === 0;
@@ -93,6 +119,7 @@ const sandbox = fs.realpathSync(fs.mkdtempSync("/tmp/pi-scope-smoke-"));
 fs.writeFileSync(join(sandbox, "SCOPE-SMOKE-SANDBOX"), "");
 fs.mkdirSync(runDir(sandbox), { recursive: true, mode: 0o700 });
 writeGuard(sandbox);
+writePi(sandbox);
 const defaultBefore = realDefaultPid();
 const results = [];
 const check = (variant, name, fn) => {
@@ -116,9 +143,10 @@ if (!results[0].ok) {
   process.exit(1);
 }
 
-function variant(label, base) {
+function variant(label, base, { sourcesScope = false } = {}) {
   const conf = join(sandbox, `${label}.conf`);
-  fs.writeFileSync(conf, `${base}\nsource-file '${scopeConf}'\n`);
+  // Sourcing scope.conf twice in one load is unsupported; a config that already sources it is tested as-is.
+  fs.writeFileSync(conf, sourcesScope ? `${base}\n` : `${base}\nsource-file '${scopeConf}'\n`);
   const env = sandboxEnv(sandbox, conf);
   const scope = (...a) => spawnSync(process.execPath, [scopeCli, ...a], { env, encoding: "utf8", stdin: "ignore" });
   const t = (name, ...a) => spawnSync(guardTmux(sandbox), ["-f", conf, "-S", sock(sandbox, name), ...a], { env, encoding: "utf8" });
@@ -185,13 +213,117 @@ function variant(label, base) {
       detail: r.stdout + r.stderr + listed.join(","),
     };
   });
-  check(label, "a stopped scope opens again", () => scope("open", a, "--no-attach").stdout.startsWith("started"));
-  if (!keep) for (const n of [a, b, fakeDefault, "pi-continuity-test-stray"]) t(n, "kill-server");
+  check(label, "a stopped scope opens again, restored from the save made by stop", () => {
+    const r = scope("open", a, "--no-attach");
+    return { ok: /restored/.test(r.stdout) && out(a, "list-sessions", "-F", "#S") === "api\nmain", detail: r.stdout + r.stderr };
+  });
+  recovery(label, conf, env, scope, t, out);
+  if (!keep) for (const n of [a, b, `${label}-r`, fakeDefault, "pi-continuity-test-stray"]) t(n, "kill-server");
 }
 
-variant("fixture", `set -g status-left '#[fg=#{?client_prefix,red,green}] #S '\nset -g set-titles-string '#S:#W'`);
-if (withUserConfig) variant("user", `source-file '${userConf}'`);
+function waitFor(fn, ms = 30000) {
+  const deadline = Date.now() + ms;
+  for (;;) { const v = fn(); if (v || Date.now() > deadline) return v; spawnSync("sleep", ["0.25"]); }
+}
+
+function recovery(label, conf, env, scope, t, out) {
+  const r = `${label}-r`, work = join(sandbox, "work", label), proj = join(work, "proj"), other = join(work, "other");
+  for (const d of [proj, other]) fs.mkdirSync(d, { recursive: true });
+  const A = invented(join(work, "histories", "A.jsonl"), `${label}-conv-A`, proj);
+  const B = invented(join(work, "histories", "B.jsonl"), `${label}-conv-B`, proj);
+  const SUB = invented(join(sandbox, "agent", "subagents", `${label}h1`, "session.jsonl"), `${label}-conv-sub`, proj);
+  const inspectRows = () => {
+    const res = spawnSync(process.execPath, [join(repo, "bin/inspect.js"), "inspect", "--socket", sock(sandbox, r), "--json"], { env, encoding: "utf8" });
+    try { return JSON.parse(res.stdout).panes ?? []; } catch { return []; }
+  };
+  const agents = () => Object.fromEntries(inspectRows().filter((x) => x.status === "live-persistent").map((x) => [x.pane.pane, x.binding]));
+  const layoutOf = () => out(r, "list-panes", "-a", "-F", "#{session_name}:#{window_index}:#{window_name}.#{pane_index} #{pane_current_path} #{pane_left},#{pane_top},#{pane_width}x#{pane_height}").split("\n").sort().join("\n");
+  const filesByPosition = () => {
+    const ids = Object.fromEntries(out(r, "list-panes", "-a", "-F", "#{pane_id} #{session_name}:#{window_name}.#{pane_index}").split("\n").map((l) => l.split(" ")));
+    return Object.fromEntries(Object.entries(agents()).map(([pane, b]) => [ids[pane], b.sessionFile]));
+  };
+  const runPi = (pane, conv) => { t(r, "send-keys", "-t", pane, "-l", `${env.PI_TMUX_SCOPE_PI} --session '${conv.file}'`); t(r, "send-keys", "-t", pane, "Enter"); };
+
+  // Build: window "agents" with two Pis sharing one cwd, a plain shell window, and a subagent pane.
+  scope("open", r, "--no-attach");
+  t(r, "rename-window", "-t", "main:", "agents");
+  t(r, "send-keys", "-t", "main:agents", `cd '${proj}'`, "Enter");
+  const p2 = out(r, "split-window", "-h", "-P", "-F", "#{pane_id}", "-t", "main:agents", "-c", proj);
+  const p1 = out(r, "list-panes", "-t", "main:agents", "-F", "#{pane_id}").split("\n")[0];
+  runPi(p1, A); runPi(p2, B);
+  out(r, "new-window", "-d", "-t", "main:", "-n", "shell", "-c", other);
+  out(r, "new-session", "-d", "-s", "side", "-c", proj);
+  runPi("side:", SUB);
+  const registered = waitFor(() => Object.keys(agents()).length === 3);
+  check(label, "setup: three Pis register in the scope (two share a cwd, one subagent)", () => ({ ok: !!registered, detail: JSON.stringify(Object.keys(agents())) }));
+
+  check(label, "save records topology and two resumable Pi conversations", () => {
+    const res = scope("save", r);
+    return { ok: res.status === 0 && /2 Pi conversations/.test(res.stdout), detail: res.stdout + res.stderr };
+  });
+  const expectedLayout = layoutOf(), expectedFiles = filesByPosition();
+  const oldPids = Object.values(agents()).map((b) => b.process.pid);
+
+  check(label, "autosave is wired on scope servers and throttled", () => {
+    const right = out(r, "show", "-gv", "status-right"), pointer = join(sandbox, "scopes", r, "latest.json");
+    const before = fs.readFileSync(pointer, "utf8");
+    scope("autosave", r);
+    const throttled = fs.readFileSync(pointer, "utf8") === before;
+    fs.utimesSync(pointer, new Date(0), new Date(0));
+    spawnSync("sleep", ["1.1"]);
+    scope("autosave", r);
+    return { ok: /autosave/.test(right) && throttled && fs.readFileSync(pointer, "utf8") !== before, detail: right };
+  });
+  check(label, "default server has no autosave", () => !/autosave/.test(out("default", "show", "-gv", "status-right")));
+
+  // Crash: the server dies without `scope stop`; its Pis exit with it.
+  t(r, "kill-server");
+  const gone = waitFor(() => !answers(sandbox, sock(sandbox, r)) && oldPids.every((pid) => spawnSync("kill", ["-0", String(pid)]).status !== 0), 15000);
+  check(label, "crash: server and its Pi processes are gone", () => !!gone);
+
+  let restoredOut = "";
+  check(label, "open restores the stopped scope and reports the subagent as a gap", () => {
+    const res = scope("open", r, "--no-attach"); restoredOut = res.stdout + res.stderr;
+    return { ok: res.status === 0 && /2 Pi resumed/.test(res.stdout) && /gap side:\d+\.\d+ pi-subagent/.test(res.stdout) && /restored/.test(res.stdout), detail: restoredOut };
+  });
+  check(label, "same sessions, window names, panes, directories and geometry", () => {
+    const now = layoutOf();
+    return { ok: now === expectedLayout, detail: `expected:\n${expectedLayout}\nnow:\n${now}` };
+  });
+  const resumed = waitFor(() => { const f = filesByPosition(); return Object.keys(f).length === 2 ? f : null; });
+  check(label, "the same exact conversations run again in the same panes, as new processes", () => {
+    const want = Object.fromEntries(Object.entries(expectedFiles).filter(([, f]) => !f.includes("/subagents/")));
+    const newPids = Object.values(agents()).map((b) => b.process.pid);
+    return { ok: JSON.stringify(resumed) === JSON.stringify(want) && newPids.every((p) => !oldPids.includes(p)), detail: `${JSON.stringify(resumed)} vs ${JSON.stringify(want)}` };
+  });
+  check(label, "subagent and plain shell panes come back as shells", () => {
+    const rows = inspectRows(), ids = Object.fromEntries(out(r, "list-panes", "-a", "-F", "#{pane_id} #{session_name}:#{window_name}").split("\n").map((l) => l.split(" ")));
+    const shells = rows.filter((x) => ["side:" + out(r, "display", "-p", "-t", "side:", "#{window_name}"), "main:shell"].includes(ids[x.pane.pane]));
+    return { ok: shells.length === 2 && shells.every((x) => x.status === "unregistered"), detail: JSON.stringify(shells.map((x) => x.status)) };
+  });
+  check(label, "opening the restored scope again launches nothing", () => {
+    const before = out(r, "list-panes", "-a", "-F", "#{pane_id}:#{pane_pid}"), res = scope("open", r, "--no-attach");
+    return res.stdout.startsWith("attached") && out(r, "list-panes", "-a", "-F", "#{pane_id}:#{pane_pid}") === before;
+  });
+  check(label, "a missing conversation file becomes an explained gap; the rest restores", () => {
+    const stopped = scope("stop", r, "--yes");
+    fs.renameSync(B.file, B.file + ".moved");
+    const res = scope("open", r, "--no-attach");
+    fs.renameSync(B.file + ".moved", B.file);
+    const one = waitFor(() => Object.keys(filesByPosition()).length === 1);
+    return { ok: /saved/.test(stopped.stdout) && /1 Pi resumed/.test(res.stdout) && /missing-exact-file/.test(res.stdout) && !!one, detail: stopped.stdout + res.stdout };
+  });
+}
+
+try {
+variant("fixture", `set -g status-left '#[fg=#{?client_prefix,red,green}] #S '\nset -g set-titles-string '#S:#W'\nset -g automatic-rename off\nset -g allow-rename off`);
+const userSourcesScope = () => [userConf, join(homedir(), ".config/tmux/tmux.conf")].some((f) => fs.existsSync(f) && fs.readFileSync(f, "utf8").includes("pi-tmux-continuity/tmux/scope.conf"));
+if (withUserConfig) variant("user", `source-file '${userConf}'`, { sourcesScope: userSourcesScope() });
 else console.log(`SKIP  [user] ${fs.existsSync(userConf) ? "--no-user-config" : "no ~/.tmux.conf"}`);
+} catch (e) {
+  results.push({ variant: "harness", name: "harness error", ok: false, detail: e.stack });
+  console.log(`FAIL  [harness] ${e.stack}`);
+}
 
 check("guard", "no tmux call targeted anything outside the sandbox", () => {
   const v = join(sandbox, "violations");

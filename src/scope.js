@@ -38,7 +38,7 @@ export function home(name, env = process.env) {
 
 function tmuxArgs(name, env, args) {
   const conf = env.PI_TMUX_SCOPE_CONF;
-  return [...(conf ? ["-f", conf] : []), "-S", socketPath(name, env), ...args];
+  return ["-u", ...(conf ? ["-f", conf] : []), "-S", socketPath(name, env), ...args];
 }
 
 export function tmux(name, args, { env = process.env, stdio = "pipe" } = {}) {
@@ -71,23 +71,30 @@ export function list(env = process.env) {
 }
 
 /**
- * Attach to a live scope, or start it with one shell session. A live server is attach-only:
- * nothing is created or launched on it.
+ * Attach to a live scope; otherwise restore it from its snapshot, or start it with one
+ * shell session. A live server is attach-only: nothing is created or launched on it.
  */
-export function open(name, { env = process.env, attach = true, cwd = process.cwd() } = {}) {
+export function open(name, { env = process.env, attach = true, cwd = process.cwd(), fresh = false, restore } = {}) {
   assertName(name);
   ensureHome(name, env);
   const before = status(name, env);
+  let report = null;
   if (!before.live) {
     fs.mkdirSync(dirname(socketPath(name, env)), { recursive: true, mode: 0o700 });
-    const r = tmux(name, ["new-session", "-d", "-s", "main", "-c", cwd], { env });
-    if (r.status !== 0) throw new Error(`Could not start scope ${name}: ${r.stderr.trim()}`);
+    // `restore` is injected (src/scope-state.js) and returns null when there is no snapshot.
+    if (restore && !fresh) report = restore(name, { env });
+    if (!report) {
+      const r = tmux(name, ["new-session", "-d", "-s", "main", "-c", cwd], { env });
+      if (r.status !== 0) throw new Error(`Could not start scope ${name}: ${r.stderr.trim()}`);
+    }
+    // Autosave in tmux/scope.conf calls back into this CLI.
+    tmux(name, ["set-option", "-g", "@scope-cli", `${process.execPath} ${join(import.meta.dirname, "../bin/scope.js")}`], { env });
   }
   if (attach) {
     const r = tmux(name, ["attach-session"], { env, stdio: "inherit" });
     if (r.status !== 0) throw new Error(`Could not attach to scope ${name}`);
   }
-  return { name, action: before.live ? "attached" : "started", socket: socketPath(name, env) };
+  return { name, action: before.live ? "attached" : report ? "restored" : "started", socket: socketPath(name, env), report };
 }
 
 /** Stop exactly this scope's server; keep its home. Removes the socket file tmux leaves behind. */
