@@ -17,6 +17,7 @@
     "scripts/build-extension.js",
     "src",
     "bin",
+    "tmux",
     "README.md"
   ],
   "pi": {
@@ -31,7 +32,7 @@
     "build": "node scripts/build-extension.js",
     "check:bundle": "node scripts/build-extension.js --check",
     "pretest": "npm run check:bundle",
-    "test": "node --test test/activity.test.js test/bundle.test.js test/claude.test.js test/display.test.js test/durable-recovery.test.js test/logic.test.js test/names.test.js test/picker-sort.test.js test/picker.test.js test/presentation.test.js test/recovery-admission.test.js test/runtime.test.js test/subprocess.test.js",
+    "test": "node --test test/activity.test.js test/bundle.test.js test/claude.test.js test/display.test.js test/durable-recovery.test.js test/logic.test.js test/names.test.js test/picker-sort.test.js test/picker.test.js test/presentation.test.js test/recovery-admission.test.js test/runtime.test.js test/scope.test.js test/scope-state.test.js test/subprocess.test.js",
     "pretest:integration": "npm run check:bundle",
     "test:integration": "node --test --test-concurrency=1 test/integration/bundled-modes.test.js test/integration/bundled-reload.test.js test/integration/claude-synthetic.test.js test/integration/display-cas.test.js test/integration/durable-recovery.test.js test/integration/offline.test.js test/integration/picker-sort.test.js test/integration/picker.test.js test/integration/recovery-admission.test.js test/integration/shell-workflow.test.js test/integration/upgrade-reload.test.js",
     "prepack": "npm run check:bundle"

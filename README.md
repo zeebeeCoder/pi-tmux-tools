@@ -73,6 +73,59 @@ inference. Display controls are escaped and inherited `FZF_*` configuration is
 removed. Working is yellow, idle blue, attention amber, unknown grey. Idle never
 means accepted work. Refresh explicitly: ages and activity are snapshots.
 
+## Scopes
+
+A scope is any non-default tmux server: `tmux -L acme`. Each server is separate, so
+`choose-tree`, tmux-fzf and the agent picker show only that scope's sessions and agents.
+Everything is plain tmux; there is no extra CLI. Source `tmux/scope.conf` once, last, from
+your tmux configuration; it changes nothing on the default server.
+
+### Everyday use
+
+```sh
+tmux -L acme                 # start or come back to scope "acme" (restores it if it was gone)
+tmux -L acme attach          # attach to a running scope
+tmux -L acme ls              # its sessions
+tmux -L acme kill-server     # end it (save first: prefix C-s)
+tmux attach                  # the default server, as before
+```
+
+- **Where am I?** The amber block in the status bar and `[acme]` in the window title. No
+  block means the default server.
+- **Saving** happens every five minutes while a client is attached, whenever a client
+  detaches, and on `prefix C-s`.
+- **Restoring** happens when a scope server starts and the scope has a save, e.g. after a
+  crash, `kill-server` or reboot. The start-up session is replaced by the saved sessions,
+  windows, splits and directories, and each saved agent is resumed in its pane. A message
+  in the status line summarises it. Restore runs once per server start, never on a config
+  reload, and never replaces a session already in use. To start a scope empty instead:
+  `PI_TMUX_SCOPE_FRESH=1 tmux -L acme`.
+- **Moving between scopes:** detach (`prefix d`) and attach to another, or attach from
+  another terminal.
+
+### What is saved and restored
+
+A save records sessions, windows (names, layouts), panes (directories) and, per pane, the
+exact agent conversation from the strict registry. It never records commands, pane
+contents, transcripts or environments. Saves live in `~/.local/state/tmux/scopes/<name>/`
+(`snapshots/`, last 50 kept; `latest.json`). Restore types `pi --session <exact file>` or
+`claude --resume <exact session id>` into the saved panes, using your normal agent setup;
+no prompt is sent. Launch flags such as permission modes are not saved, so agents come
+back with your defaults. Plain panes come back as shells in their directories.
+
+Explained gaps instead of launches (listed in `last-restore.json`): pi-subagent
+conversations (owned by pi-subagent), agents not persisted at save time, missing or
+mismatched conversation files (Claude: missing transcript), a saved agent process that is
+still running, and sessions whose name is already in use. Each conversation is launched at
+most once. Saving is refused while a restore runs. Errors go to `errors.log` in the scope home.
+
+Scope servers do not load Resurrect/Continuum; scopes use their own snapshots. tmux calls
+`bin/tmux-scope.js` (save, autosave, restore); it is not meant to be run by hand.
+
+`node test/manual/verify-scopes.js [--keep]` smoke-tests all of this with real offline Pi on
+ephemeral servers in a private sandbox. A guard `tmux` refuses any call targeting a socket
+outside the sandbox, and the run checks the real default server's PID is unchanged.
+
 ## Ownership, privacy and activity
 
 Namespaced pane options contain exact file/ID/cwd, process births, activation and
@@ -115,7 +168,8 @@ Fork events are conservatively closed rather than attributed ambiguously.
 References come from native hook file/ID fields. Claude file checks do not read
 transcript bodies and always leave recovery identity/integrity unverified.
 Turn/tool/permission/idle coverage is synthetic; native lifecycle coverage is
-limited. **Claude recovery is unsupported.** No native Claude/auth experiment is
+limited. The lab adapter in `src/recovery/` does not recover Claude; scope restore resumes
+Claude by exact session ID (see Scopes). No native Claude/auth experiment is
 part of the offline suite.
 
 ## Development and verification
