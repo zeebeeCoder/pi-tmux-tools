@@ -73,6 +73,33 @@ inference. Display controls are escaped and inherited `FZF_*` configuration is
 removed. Working is yellow, idle blue, attention amber, unknown grey. Idle never
 means accepted work. Refresh explicitly: ages and activity are snapshots.
 
+## Scopes
+
+A scope is a dedicated tmux server for one body of work (e.g. one client), so every
+session list, chooser and the agent picker show only that scope. Run from a plain
+terminal, not inside tmux:
+
+```sh
+node bin/scope.js open acme      # attach; start with one shell session if not running
+node bin/scope.js list           # scopes and whether each server is live
+node bin/scope.js stop acme      # asks first; stops only that server, keeps its home
+```
+
+A scope is defined by its home, `~/.local/state/tmux/scopes/<name>/`, not by socket
+files. Servers are addressed by exact socket path (`$TMUX_TMPDIR`, default `/tmp`,
+`/tmux-<uid>/<name>`); a missing `TMUX_TMPDIR` is refused rather than letting tmux fall
+back to `/tmp`. The name `default` is reserved, and scope tooling never addresses the
+default server. Opening a live scope only attaches.
+
+To show the scope in the status bar and terminal title, source `tmux/scope.conf` last
+from your tmux configuration. It changes nothing on the default server and is
+reload-safe. Scope servers do not load Resurrect/Continuum here: they have no saves and
+come back empty after their server ends. Per-scope paired save/recovery is not built yet.
+
+`node test/manual/verify-scopes.js [--keep]` smoke-tests scopes on ephemeral servers in a
+private sandbox. A guard `tmux` refuses any call targeting a socket outside the sandbox,
+and the run checks the real default server's PID is unchanged.
+
 ## Ownership, privacy and activity
 
 Namespaced pane options contain exact file/ID/cwd, process births, activation and
