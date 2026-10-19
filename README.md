@@ -76,8 +76,9 @@ means accepted work. Refresh explicitly: ages and activity are snapshots.
 ## Scopes
 
 A scope is a dedicated tmux server for one body of work (e.g. one client), so every
-session list, chooser and the agent picker show only that scope. Run from a plain
-terminal, not inside tmux:
+session list, chooser and the agent picker show only that scope. From a plain terminal
+these attach; inside tmux, `open` and `default` switch the current terminal instead of
+nesting tmux:
 
 ```sh
 node bin/scope.js open acme      # attach; if stopped, restore from the last save (or start empty)
@@ -85,6 +86,7 @@ node bin/scope.js save acme      # save topology and exact agent conversations n
 node bin/scope.js list           # scopes, whether each server is live, last save
 node bin/scope.js stop acme      # asks first; saves, then stops only that server
 node bin/scope.js open acme --fresh   # start empty, ignoring the save
+node bin/scope.js default        # back to the default tmux server
 ```
 
 A save records sessions, windows (names, layouts), panes (directories) and, per pane,
@@ -93,10 +95,12 @@ transcripts or environments. Saves live in the scope home (`snapshots/`, last 50
 `latest.json`). While a client is attached, the status line autosaves every five
 minutes. Restore runs only when the scope's server is not running: it rebuilds the
 topology on a fresh server and types `pi --session <exact file>` into each saved Pi
-pane, using your normal Pi setup; no prompt is sent. Plain panes come back as shells
-in their directories. Explained gaps instead of launches: Claude (resume not verified),
-pi-subagent conversations (owned by pi-subagent), agents not persisted at save time,
-missing/mismatched conversation files, and a saved Pi process that is still running.
+pane, using your normal Pi setup, and `claude --resume <exact session id>` into each
+saved Claude pane; no prompt is sent. Launch flags (e.g. permission modes) are not
+saved, so agents come back with your defaults. Plain panes come back as shells
+in their directories. Explained gaps instead of launches: pi-subagent conversations (owned by pi-subagent), agents not persisted at save time,
+missing/mismatched conversation files (Claude: missing transcript), and a saved agent
+process that is still running.
 Each conversation is launched at most once per restore. `last-restore.json` records
 what was launched and every gap.
 
@@ -157,7 +161,8 @@ Fork events are conservatively closed rather than attributed ambiguously.
 References come from native hook file/ID fields. Claude file checks do not read
 transcript bodies and always leave recovery identity/integrity unverified.
 Turn/tool/permission/idle coverage is synthetic; native lifecycle coverage is
-limited. **Claude recovery is unsupported.** No native Claude/auth experiment is
+limited. The lab adapter in `src/recovery/` does not recover Claude; scope restore resumes
+Claude by exact session ID (see Scopes). No native Claude/auth experiment is
 part of the offline suite.
 
 ## Development and verification

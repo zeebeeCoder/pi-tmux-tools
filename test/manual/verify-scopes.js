@@ -165,9 +165,9 @@ function variant(label, base, { sourcesScope = false } = {}) {
     const after = out(a, "list-panes", "-a", "-F", "#{pane_id}:#{pane_pid}");
     return { ok: r.stdout.startsWith("attached") && before === after && before.split("\n").length === 1, detail: `${before} -> ${after}` };
   });
-  check(label, "attaching from inside tmux is refused", () => {
+  check(label, "opening the scope you are already in is refused", () => {
     const r = spawnSync(process.execPath, [scopeCli, "open", a], { env: { ...env, TMUX: `${sock(sandbox, a)},1,0` }, encoding: "utf8" });
-    return r.status === 1 && /inside tmux/.test(r.stderr);
+    return r.status === 1 && /Already in scope/.test(r.stderr);
   });
   check(label, "a missing TMUX_TMPDIR is refused, not redirected to /tmp", () => {
     const r = spawnSync(process.execPath, [scopeCli, "open", a, "--no-attach"], { env: { ...env, TMUX_TMPDIR: join(sandbox, "missing") }, encoding: "utf8" });
@@ -259,7 +259,7 @@ function recovery(label, conf, env, scope, t, out) {
 
   check(label, "save records topology and two resumable Pi conversations", () => {
     const res = scope("save", r);
-    return { ok: res.status === 0 && /2 Pi conversations/.test(res.stdout), detail: res.stdout + res.stderr };
+    return { ok: res.status === 0 && /2 Pi and 0 Claude conversations/.test(res.stdout), detail: res.stdout + res.stderr };
   });
   const expectedLayout = layoutOf(), expectedFiles = filesByPosition();
   const oldPids = Object.values(agents()).map((b) => b.process.pid);
@@ -284,7 +284,7 @@ function recovery(label, conf, env, scope, t, out) {
   let restoredOut = "";
   check(label, "open restores the stopped scope and reports the subagent as a gap", () => {
     const res = scope("open", r, "--no-attach"); restoredOut = res.stdout + res.stderr;
-    return { ok: res.status === 0 && /2 Pi resumed/.test(res.stdout) && /gap side:\d+\.\d+ pi-subagent/.test(res.stdout) && /restored/.test(res.stdout), detail: restoredOut };
+    return { ok: res.status === 0 && /2 Pi and 0 Claude resumed/.test(res.stdout) && /gap side:\d+\.\d+ pi-subagent/.test(res.stdout) && /restored/.test(res.stdout), detail: restoredOut };
   });
   check(label, "same sessions, window names, panes, directories and geometry", () => {
     const now = layoutOf();
@@ -311,7 +311,7 @@ function recovery(label, conf, env, scope, t, out) {
     const res = scope("open", r, "--no-attach");
     fs.renameSync(B.file + ".moved", B.file);
     const one = waitFor(() => Object.keys(filesByPosition()).length === 1);
-    return { ok: /saved/.test(stopped.stdout) && /1 Pi resumed/.test(res.stdout) && /missing-exact-file/.test(res.stdout) && !!one, detail: stopped.stdout + res.stdout };
+    return { ok: /saved/.test(stopped.stdout) && /1 Pi and 0 Claude resumed/.test(res.stdout) && /missing-exact-file/.test(res.stdout) && !!one, detail: stopped.stdout + res.stdout };
   });
 }
 

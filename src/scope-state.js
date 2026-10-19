@@ -27,8 +27,11 @@ export function subagentsDir(env = process.env) {
 export function agentFor(row, env = process.env) {
   if (!row || row.status === "unregistered") return null;
   const b = row.binding;
+  const ref = b && { file: b.sessionFile, id: b.sessionId, cwd: b.cwd, pid: b.process?.pid, birth: b.process?.birth };
+  // The registry never marks Claude restorable (it does not read transcripts); a valid live
+  // Claude registration with an exact session ID is enough to plan `claude --resume <id>`.
+  if (b?.agent === "claude" && row.status === "live-non-restorable" && b.sessionId && b.sessionFile) return { kind: "claude", ...ref };
   if (row.status !== "live-persistent" || !b) return { kind: "unknown", status: row.status };
-  const ref = { file: b.sessionFile, id: b.sessionId, cwd: b.cwd, pid: b.process?.pid, birth: b.process?.birth };
   if (b.agent === "claude") return { kind: "claude", ...ref };
   if (b.sessionFile?.startsWith(subagentsDir(env) + "/")) return { kind: "pi-subagent", ...ref };
   return { kind: "pi", ...ref };
@@ -91,8 +94,25 @@ export function save(name, { env = process.env, ifOlderSeconds } = {}) {
   writeAtomic(join(dir, file), JSON.stringify(snapshot, null, 2) + "\n");
   writeAtomic(join(home(name, env), "latest.json"), JSON.stringify({ file }) + "\n");
   for (const old of fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort().slice(0, -KEEP)) fs.rmSync(join(dir, old));
-  const agents = snapshot.sessions.flatMap((s) => s.windows.flatMap((w) => w.panes.filter((p) => p.agent?.kind === "pi")));
-  return { name, action: "saved", file, sessions: snapshot.sessions.length, agents: agents.length };
+  const count = (kind) => snapshot.sessions.flatMap((s) => s.windows.flatMap((w) => w.panes.filter((p) => p.agent?.kind === kind))).length;
+  return { name, action: "saved", file, sessions: snapshot.sessions.length, agents: count("pi"), claude: count("claude") };
+}
+
+/**
+ * Claude resumes by exact session ID (`claude --resume <id>`) in its saved directory.
+ * Only the transcript's presence is checked; its contents are never read.
+ */
+export function claudeReference(a) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(a.id ?? "")) return "invalid-session-id";
+  if (!a.file || !fs.existsSync(a.file)) return "missing-transcript";
+  const st = fs.statSync(a.file);
+  if (!st.isFile() || st.size === 0) return "invalid-transcript";
+  return null;
+}
+
+/** The command typed into a restored pane; no prompt is ever passed. */
+export function resumeCommand(a, env = process.env) {
+  return a.kind === "claude" ? `${env.PI_TMUX_SCOPE_CLAUDE || "claude"} --resume ${quote(a.id)}` : `${env.PI_TMUX_SCOPE_PI || "pi"} --session ${quote(a.file)}`;
 }
 
 /** Decide, before any server exists, what each saved agent pane gets. */
@@ -104,14 +124,13 @@ export function plan(snapshot, env = process.env, alive = (pids) => processesFor
   for (const { s, w, p } of pis) {
     const where = `${s.name}:${w.index}.${p.index}`, a = p.agent;
     const gap = (reason) => gaps.push({ where, kind: a.kind, file: a.file ?? null, reason });
-    if (a.kind === "claude") { gap("Claude resume not verified yet; pane restored as a shell"); continue; }
     if (a.kind === "pi-subagent") { gap("subagent conversation; owned by pi-subagent, not relaunched"); continue; }
-    if (a.kind !== "pi") { gap(`agent state was ${a.status} at save; not relaunched`); continue; }
+    if (a.kind !== "pi" && a.kind !== "claude") { gap(`agent state was ${a.status} at save; not relaunched`); continue; }
     const proc = live[a.pid];
     if (proc?.live && proc.birth === a.birth) { gap("the saved Pi process is still running elsewhere; not launched twice"); continue; }
     if (seen.has(a.file)) { gap("same conversation already planned in another pane"); continue; }
     let reason;
-    try { reason = exactReference(null, a); } catch { reason = "unsupported conversation path"; }
+    try { reason = a.kind === "claude" ? claudeReference(a) : exactReference(null, a); } catch { reason = "unsupported conversation path"; }
     if (reason) { gap(`conversation not resumable: ${reason}`); continue; }
     seen.add(a.file);
     launches.set(p, a);
@@ -130,7 +149,6 @@ export function restore(name, { env = process.env } = {}) {
   const { snapshot } = found;
   if (!snapshot.sessions.some((x) => x.windows.some((w) => w.panes.length))) throw new Error(`Snapshot ${found.file} is empty; use --fresh`);
   const { launches, gaps } = plan(snapshot, env);
-  const piCommand = env.PI_TMUX_SCOPE_PI || "pi";
   const dirFor = (p) => {
     const cwd = launches.get(p)?.cwd ?? p.cwd;
     if (fs.existsSync(cwd) && fs.statSync(cwd).isDirectory()) return cwd;
@@ -158,9 +176,9 @@ export function restore(name, { env = process.env } = {}) {
       w.panes.forEach((p, i) => {
         const a = launches.get(p);
         if (a) {
-          t(name, env, ["send-keys", "-t", paneIds[i], "-l", `${piCommand} --session ${quote(a.file)}`]);
+          t(name, env, ["send-keys", "-t", paneIds[i], "-l", resumeCommand(a, env)]);
           t(name, env, ["send-keys", "-t", paneIds[i], "Enter"]);
-          launched.push({ where: `${s.name}:${w.index}.${p.index}`, pane: paneIds[i], file: a.file, id: a.id });
+          launched.push({ where: `${s.name}:${w.index}.${p.index}`, pane: paneIds[i], agent: a.kind, file: a.file, id: a.id });
         }
         if (p.active) t(name, env, ["select-pane", "-t", paneIds[i]]);
       });
