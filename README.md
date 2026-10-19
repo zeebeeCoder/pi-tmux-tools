@@ -89,6 +89,31 @@ node bin/scope.js open acme --fresh   # start empty, ignoring the save
 node bin/scope.js default        # back to the default tmux server
 ```
 
+### Everyday use
+
+Scopes are switched from the command line; there is no switcher popup. A shell alias
+keeps it short: `alias scope='node /absolute/path/to/pi-tmux-continuity/bin/scope.js'`.
+
+1. **Start or resume work:** `scope open acme`. It attaches if the scope is running, restores it
+   from its last save if it is not (after a crash or reboot), or creates it with one shell.
+2. **Work normally.** Create sessions/windows/splits and start Pi or Claude as usual. The amber
+   block in the status bar (and `[acme]` in the window title) shows which scope you are in; no
+   block means the default server. `Ctrl+Space s` and `Ctrl+Space a` list only this scope's
+   sessions and agents.
+3. **Move between scopes:** `scope open other` or `scope default`, from inside tmux or a plain
+   terminal. `Ctrl+Space d` leaves the scope running and drops to a plain shell.
+4. **Saving is automatic** every five minutes while a client is attached. Run `scope save acme`
+   right before something risky.
+5. **Finish:** `scope stop acme` saves, then stops only that server. `scope open acme` brings it
+   back later; `scope open acme --fresh` starts it empty instead.
+
+To look around: `scope list` (live/stopped and last save), `tmux -L acme ls`, and
+`~/.local/state/tmux/scopes/acme/last-restore.json` for what the last restore launched and
+why any pane came back as a plain shell. Never run an unqualified `tmux kill-server` from
+the default server; `scope stop` only stops the scope it names.
+
+### What is saved and restored
+
 A save records sessions, windows (names, layouts), panes (directories) and, per pane,
 the exact Pi conversation from the strict registry. No commands, pane contents,
 transcripts or environments. Saves live in the scope home (`snapshots/`, last 50 kept,
