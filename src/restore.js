@@ -67,15 +67,16 @@ export function plan(snapshot, env = process.env, observe = liveness) {
 const SHELLS = new Set(["zsh", "bash", "sh", "fish", "dash", "ksh", "tcsh", "nu"]);
 
 /**
- * The session tmux created when this server started, and only that: auto-numbered name,
- * created with the server, one window, one pane, only a shell, no child processes.
- * A named session, or one anybody has started something in, is never treated as disposable.
+ * The session tmux created when this server started, and only that: created with the server,
+ * one window, one pane, only a shell, no child processes, and either auto-numbered or named
+ * after a saved session (`tmux new-session -A -s NAME` on a stopped workspace). Any other
+ * named session, or one anybody has started something in, is never treated as disposable.
  */
-export function bootstrapSessions(socket, env = process.env, { autoNamed = true, children = (pid) => spawnSync("pgrep", ["-P", String(pid)], { encoding: "utf8" }).stdout.trim() !== "" } = {}) {
+export function bootstrapSessions(socket, env = process.env, { names = new Set(), anyName = false, children = (pid) => spawnSync("pgrep", ["-P", String(pid)], { encoding: "utf8" }).stdout.trim() !== "" } = {}) {
   const started = Number(tmuxOut(socket, ["display-message", "-p", "#{start_time}"], { env }));
   const panes = rows(tmuxOut(socket, ["list-panes", "-a", "-F", ["#{session_id}", "#{session_name}", "#{session_created}", "#{session_windows}", "#{window_panes}", "#{pane_current_command}", "#{pane_pid}"].join(SEP)], { env }));
   return panes
-    .filter(([, name, created, w, p, cmd, pid]) => (!autoNamed || /^\d+$/.test(name)) && Number(created) - started <= 2 && w === "1" && p === "1" && SHELLS.has(basename(cmd)) && !children(pid))
+    .filter(([, name, created, w, p, cmd, pid]) => (anyName || /^\d+$/.test(name) || names.has(name)) && Number(created) - started <= 2 && w === "1" && p === "1" && SHELLS.has(basename(cmd)) && !children(pid))
     .map(([id, name]) => ({ id, name }));
 }
 
@@ -123,20 +124,20 @@ function rebuild(socket, env, name, found, settle, verifyMs) {
   const t = (args) => tmuxOut(socket, args, { env });
   const { snapshot } = found;
   awaitStartupSession(socket, env, settle);
-  const bootstrap = bootstrapSessions(socket, env);
+  // pi-subagent recreates its own sessions when the parent resumes; an empty copy would block it.
+  const restorable = snapshot.sessions.filter((s) => !s.windows.every((w) => w.panes.every((p) => p.agent?.kind === "pi-subagent")));
+  const bootstrap = bootstrapSessions(socket, env, { names: new Set(restorable.map((s) => s.name)) });
   // Set aside so saved sessions can take their names back (an auto-numbered "0" included).
   for (const b of bootstrap) t(["rename-session", "-t", b.id, `__scope_bootstrap_${b.id.slice(1)}`]);
   const inUse = new Set(rows(t(["list-sessions", "-F", "#{session_name}"])).map(([n]) => n));
   const { launches, gaps } = plan(snapshot, env);
   const build = { t, env, launches, gaps, launched: [] }, created = [];
-  for (const s of [...snapshot.sessions].sort((a, b) => a.lastAttached - b.lastAttached)) {
+  for (const s of [...restorable].sort((a, b) => a.lastAttached - b.lastAttached)) {
     if (inUse.has(s.name)) { keepInUse(s, build); continue; }
-    // pi-subagent recreates its own sessions when the parent resumes; an empty copy would block it.
-    if (s.windows.every((w) => w.panes.every((p) => p.agent?.kind === "pi-subagent"))) continue;
-    created.push({ id: buildSession(s, build), lastAttached: s.lastAttached });
+    created.push({ id: buildSession(s, build), name: s.name, lastAttached: s.lastAttached });
   }
-  // Renamed above, so the untouched check runs again without the auto-name test.
-  retireBootstrap(t, bootstrap, created, () => bootstrapSessions(socket, env, { autoNamed: false }));
+  // Renamed above, so the untouched check runs again without the name test.
+  retireBootstrap(t, gaps, bootstrap, created, () => bootstrapSessions(socket, env, { anyName: true }));
   verify(socket, env, build.launched, verifyMs);
   const agentGaps = gaps.filter((g) => g.kind === "pi" || g.kind === "claude").length;
   const unverified = build.launched.filter((l) => !l.verified).length;
@@ -195,22 +196,26 @@ function buildSession(s, { t, env, launches, gaps, launched }) {
 }
 
 /**
- * Once something was restored, move clients off the start-up session, then remove it if it is
- * still untouched; otherwise, or if nothing was restored, give it its name back.
+ * Once something was restored, move clients off the start-up session (to the restored session
+ * of the same name, else the most recently used one), then remove it if it is still untouched.
+ * Otherwise it keeps its name, or becomes NAME-start if a restored session now has that name.
  */
-function retireBootstrap(t, bootstrap, created, untouched) {
+function retireBootstrap(t, gaps, bootstrap, created, untouched) {
   if (!created.length) {
     for (const b of bootstrap) t(["rename-session", "-t", b.id, b.name]);
     return;
   }
-  const target = created.reduce((a, b) => (b.lastAttached >= a.lastAttached ? b : a)).id;
-  const ids = new Set(bootstrap.map((b) => b.id));
+  const latest = created.reduce((a, b) => (b.lastAttached >= a.lastAttached ? b : a)).id;
+  const restored = new Map(created.map((c) => [c.name, c.id]));
+  const target = new Map(bootstrap.map((b) => [b.id, restored.get(b.name) ?? latest]));
   for (const [client, session] of rows(t(["list-clients", "-F", `#{client_name}${SEP}#{session_id}`]))) {
-    if (ids.has(session)) t(["switch-client", "-c", client, "-t", target]);
+    if (target.has(session)) t(["switch-client", "-c", client, "-t", target.get(session)]);
   }
   const still = new Set(untouched().map((b) => b.id));
   for (const b of bootstrap) {
-    if (still.has(b.id)) t(["kill-session", "-t", b.id]);
-    else t(["rename-session", "-t", b.id, b.name]);
+    if (still.has(b.id)) { t(["kill-session", "-t", b.id]); continue; }
+    const name = restored.has(b.name) ? `${b.name}-start` : b.name;
+    if (name !== b.name) gaps.push({ where: b.name, kind: "session", file: null, reason: `the start-up session was used during restore; kept as ${name}` });
+    t(["rename-session", "-t", b.id, name]);
   }
 }

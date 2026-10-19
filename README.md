@@ -94,17 +94,21 @@ once, last, from your tmux configuration.
   on a config reload. `PI_TMUX_SCOPE_FRESH=1 tmux -L acme` starts empty instead.
 
 ```sh
-tmux -L acme                 # start or come back to workspace "acme"
-tmux -L acme attach          # attach to it while it runs
-tmux -L acme kill-server     # end it; the next start restores its last recovery point
+tmux -L acme attach || tmux -L acme   # come back: attach if it runs, otherwise start (and restore) it
+tmux -L acme new -A -s api            # attach to session "api", starting the workspace if needed
+tmux -L acme kill-server              # end it; the next start restores its last recovery point
 ```
+
+Plain `tmux -L acme` on a running workspace adds another session, which is then saved too.
+Inside tmux, switch workspaces with `detach-client -E "tmux -L acme attach"` rather than nesting.
 
 ### Guarantees and limits
 
 - **Existing work is never disposable.** Restore replaces only the session tmux created when
-  the server started (auto-numbered, created with the server, one shell pane, nothing started
-  in it). Named sessions and sessions in use are kept; a saved session whose name is taken is
-  reported, not merged.
+  the server started: created with the server, one shell pane, nothing started in it, and
+  either auto-numbered or named after a saved session (so `tmux new-session -A -s api` lands in
+  the restored `api`). Other named sessions and sessions in use are kept; a saved session whose
+  name is taken is reported, not merged.
 - **No guessing, no doubles.** An agent is launched only when its saved process is proven gone
   (only "no such process" counts; unobservable means not launched), its directory exists, and
   its conversation reference checks out: Pi by exact file and header, Claude by exact session

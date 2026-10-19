@@ -286,6 +286,15 @@ function recovery(label, r, conf, env, t, out, bin, settled) {
   });
 
   ({ gone } = crash());
+  t(r, "new-session", "-d", "-s", "main"); // what `tmux new-session -A -s main` does on a stopped workspace
+  settled(r);
+  check(label, "a start-up session named after a saved one is replaced by the restored session", () => {
+    const sessions = out(r, "list-sessions", "-F", "#S"), rep = report();
+    const want = expectedLayout.split("\n").filter((l) => !l.startsWith("side:")).join("\n");
+    return { ok: sessions === "main" && rep?.launched.length === 2 && rep.launched.every((l) => l.verified) && !rep.degraded && layoutOf() === want, detail: `${sessions} ${JSON.stringify(rep?.gaps)}` };
+  });
+
+  ({ gone } = crash());
   t(r, "new-session", "-d", "-s", "work");
   settled(r);
   check(label, "a named session at start is kept; saved sessions are added beside it", () => {
