@@ -84,6 +84,8 @@ test("inspection rows map to agent kinds; subagents are recognised by exact path
   assert.equal(agentFor(row("claude", "/w/c.jsonl"), env).kind, "claude");
   assert.equal(agentFor({ ...row("claude", "/w/c.jsonl"), status: "live-non-restorable" }, env).kind, "claude", "registry never marks Claude restorable");
   assert.equal(agentFor({ ...row("pi", "/w/a.jsonl"), status: "live-non-restorable" }, env).kind, "unknown", "ephemeral Pi stays unknown");
+  const noId = row("claude", "/w/c.jsonl"); noId.binding.sessionId = "";
+  assert.deepEqual(agentFor({ ...noId, status: "live-non-restorable" }, env), { kind: "unknown", status: "live-non-restorable" }, "Claude needs an exact session ID");
   assert.equal(agentFor({ status: "closed", binding: null }, env).kind, "unknown");
   assert.equal(agentFor({ status: "live-non-restorable", binding: {} }, env).kind, "unknown");
 });

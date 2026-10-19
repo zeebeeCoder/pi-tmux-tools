@@ -12,18 +12,18 @@ export function subagentsDir(env = process.env) {
   return join(env.PI_CODING_AGENT_DIR || join(env.HOME || homedir(), ".pi/agent"), "subagents");
 }
 
-/** What a pane's strict inspection row means for restore. */
+// The registry never marks Claude restorable (it does not read transcripts), so a valid live
+// Claude registration with an exact session ID is enough for `claude --resume <id>`.
+const resumableClaude = (row, b) => b?.agent === "claude" &&
+  (row.status === "live-persistent" || (row.status === "live-non-restorable" && !!b.sessionId && !!b.sessionFile));
+
+/** What a pane's strict inspection row means for restore. Pi needs a verified session header. */
 export function agentFor(row, env = process.env) {
   if (!row || row.status === "unregistered") return null;
-  const b = row.binding;
-  const ref = b && { file: b.sessionFile, id: b.sessionId, cwd: b.cwd, pid: b.process?.pid, birth: b.process?.birth };
-  // The registry never marks Claude restorable (it does not read transcripts); a valid live
-  // Claude registration with an exact session ID is enough to plan `claude --resume <id>`.
-  if (b?.agent === "claude" && row.status === "live-non-restorable" && b.sessionId && b.sessionFile) return { kind: "claude", ...ref };
-  if (row.status !== "live-persistent" || !b) return { kind: "unknown", status: row.status };
-  if (b.agent === "claude") return { kind: "claude", ...ref };
-  if (b.sessionFile?.startsWith(subagentsDir(env) + "/")) return { kind: "pi-subagent", ...ref };
-  return { kind: "pi", ...ref };
+  const b = row.binding, claude = resumableClaude(row, b);
+  if (!claude && (row.status !== "live-persistent" || !b)) return { kind: "unknown", status: row.status };
+  const kind = claude ? "claude" : b.sessionFile?.startsWith(subagentsDir(env) + "/") ? "pi-subagent" : "pi";
+  return { kind, file: b.sessionFile, id: b.sessionId, cwd: b.cwd, pid: b.process?.pid, birth: b.process?.birth };
 }
 
 const PANES = ["#{session_name}", "#{window_index}", "#{pane_index}", "#{pane_id}", "#{pane_current_path}", "#{pane_active}"].join(SEP);
