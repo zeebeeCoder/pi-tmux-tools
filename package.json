@@ -28,6 +28,11 @@
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
   "scripts": {
     "build": "node scripts/build-extension.js",
     "check:bundle": "node scripts/build-extension.js --check",

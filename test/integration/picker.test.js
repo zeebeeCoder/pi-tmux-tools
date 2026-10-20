@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { inspectPane, readDisplay, tmux } from "../../src/runtime.js";
 import { shellQuote, observeClient, navigate } from "../../src/picker.js";
+import { interactiveShell } from "../fixtures/shell.js";
 
 const repo = resolve(import.meta.dirname, "../..");
 test("owned PTY clients: real popup/fzf cancel, refresh, move, zoom, stale targets and socket/client isolation", { timeout: 90000 }, async () => {
@@ -56,7 +57,7 @@ test("owned PTY clients: real popup/fzf cancel, refresh, move, zoom, stale targe
     const command = "exec env -i " + ["PATH=" + process.env.PATH, "HOME=" + dir, "TERM=xterm-256color"].map(shellQuote).join(" ") +
       ' TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" ' + [process.execPath, join(repo, "test/fixtures/picker-agent.js"), ready, kind, id, cwd].map(shellQuote).join(" ");
     const pane = run(socket, ["new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "agents", "-n", name, "-c", cwd,
-      shell ? "exec env -i " + ["PATH=" + process.env.PATH, "HOME=" + dir, "TERM=xterm-256color", "PS1=OWNED-READY> "].map(shellQuote).join(" ") + ' TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" /bin/zsh -dfi' : command]);
+      shell ? "exec env -i " + ["PATH=" + process.env.PATH, "HOME=" + dir, "TERM=xterm-256color", "PS1=OWNED-READY> "].map(shellQuote).join(" ") + ' TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" ' + interactiveShell : command]);
     if (shell) {
       await wait(() => run(socket, ["capture-pane", "-p", "-t", pane]).includes("OWNED-READY>"), "owned shell ready");
       run(socket, ["send-keys", "-t", pane, "-l", command.replace(/^exec /, "")]);

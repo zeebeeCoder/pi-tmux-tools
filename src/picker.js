@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readDisplay, validateTarget, processesFor, tmux } from "./runtime.js";
@@ -9,7 +10,9 @@ import { label, folders, columns, columnLine, heading, relativeAge, DOT_COLORS }
 export { label } from "./presentation.js";
 import { SORTS, nextSort, previousSort, namedSession, sortRows } from "./picker-sort.js";
 
-export const FZF = "/opt/homebrew/bin/fzf";
+// Fixed absolute locations only (Homebrew, then distribution packages); never PATH.
+const FZF_PATHS = ["/opt/homebrew/bin/fzf", "/usr/local/bin/fzf", "/usr/bin/fzf"];
+export const FZF = FZF_PATHS.find(p => existsSync(p)) ?? FZF_PATHS[0];
 const cli = fileURLToPath(new URL("../bin/picker.js", import.meta.url));
 const clientPattern = /^\/dev\/[A-Za-z0-9_./-]+$/;
 export const shellQuote = s => "'" + s.replaceAll("'", "'\\''") + "'";
