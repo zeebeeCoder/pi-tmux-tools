@@ -39,11 +39,13 @@ test('real tmux atomic CAS and frozen old writer cannot erase newer generation',
     assert.equal(decodeDisplay(get()).sessionId,'two');
     assert.equal(readDisplay(socket)[0].binding.owner,newer.owner);
     // Formats in labels are inert, line controls are sanitized in single scan.
-    tmux(socket,['rename-session','-t','fixture','hostile\t##{pane_id}']);
-    tmux(socket,['rename-window','-t','%0','window\n##{pane_id}']);
+    // tmux 3.7 refuses control characters in names itself; formats must stay inert either way.
+    const rename=(command,target,hostile,plain)=>{try{tmux(socket,[command,'-t',target,hostile]);return true;}catch{tmux(socket,[command,'-t',target,plain]);return false;}};
+    const sessionControls=rename('rename-session','fixture','hostile\t##{pane_id}','hostile ##{pane_id}');
+    const windowControls=rename('rename-window','%0','window\n##{pane_id}','window ##{pane_id}');
     const rows=readDisplay(socket);assert.equal(rows.length,1);
-    assert.equal(rows[0].pane.sessionName,'hostile\\t#{pane_id}');
-    assert.equal(rows[0].pane.windowName,'window\\n#{pane_id}');
+    assert.equal(rows[0].pane.sessionName,sessionControls?'hostile\\t#{pane_id}':'hostile #{pane_id}');
+    assert.equal(rows[0].pane.windowName,windowControls?'window\\n#{pane_id}':'window #{pane_id}');
 
     // Actual executable tracing, not only a dependency seam. Unrelated stale
     // owners and corrupt history must not turn listing into diagnostics.

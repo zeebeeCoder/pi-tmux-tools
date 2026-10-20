@@ -6,13 +6,14 @@ picker. Registration/navigation does **not** save workspaces or launch agents;
 
 ## Requirements and loading
 
-- Node >=22.18, Python 3 and tmux (tested with 3.5a).
+- Node >=22.18, Python 3 and tmux (tested with 3.5a on macOS, 3.7c on Linux).
 - Pi with session lifecycle, `ctx.mode`, `agent_settled` and UI prompt events
-  (tested with Pi 1.1.0 / Node 24.10.0).
-- Registration supports macOS libproc and Linux procfs; Linux is not integration
-  certified here. Foreground process-group leadership, pane TTY and ancestry
-  must be verifiable; uncertain wrappers/background processes are refused.
-- Picker additionally requires `/opt/homebrew/bin/fzf` (tested with 0.65.1).
+  (tested with Pi 1.1.0 / Node 24.10.0 on macOS, Node 26.7.0 on Arch Linux).
+- Registration supports macOS libproc and Linux procfs; both pass the unit,
+  integration and scope suites. Foreground process-group leadership, pane TTY and
+  ancestry must be verifiable; uncertain wrappers/background processes are refused.
+- Picker additionally requires fzf at `/opt/homebrew/bin`, `/usr/local/bin` or
+  `/usr/bin` (first found; never looked up on `PATH`; tested with 0.65.1).
 
 No runtime npm dependencies: the host supplies Pi. From a disposable tmux pane:
 

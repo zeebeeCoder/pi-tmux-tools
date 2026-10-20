@@ -16,7 +16,7 @@ const drills = join(repo, "evidence", "drills");
 const argv = process.argv.slice(2);
 const command = argv[0];
 const at = argv.indexOf("--socket");
-const socket = at >= 0 ? argv[at + 1] : join(process.env.TMUX_TMPDIR || "/private/tmp", `tmux-${process.getuid()}`, "default");
+const socket = at >= 0 ? argv[at + 1] : join(process.env.TMUX_TMPDIR || fs.realpathSync("/tmp"), `tmux-${process.getuid()}`, "default");
 const SHELLS = new Set(["zsh", "bash", "sh", "fish", "dash", "ksh", "tcsh", "nu"]);
 
 /** The live server as restore sees it: sessions, windows in order, panes with exact agents. */

@@ -8,17 +8,25 @@
 //   node test/manual/verify-scopes.js --cleanup SANDBOX
 import * as fs from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const repo = resolve(import.meta.dirname, "../..");
 const scopeBin = join(repo, "bin/tmux-scope.js");
 const scopeConf = join(repo, "tmux/scope.conf");
-const userConf = join(homedir(), ".tmux.conf");
+// tmux's own search order for the user's configuration.
+const userConf = [join(homedir(), ".tmux.conf"), process.env.XDG_CONFIG_HOME && join(process.env.XDG_CONFIG_HOME, "tmux/tmux.conf"),
+  join(homedir(), ".config/tmux/tmux.conf")].find((p) => p && fs.existsSync(p)) ?? join(homedir(), ".tmux.conf");
 const uid = process.getuid();
 const argv = process.argv.slice(2);
-const realTmux = spawnSync("/bin/sh", ["-c", "command -v tmux"], { encoding: "utf8" }).stdout.trim();
+const which = (cmd) => spawnSync("/bin/sh", ["-c", `command -v ${cmd}`], { encoding: "utf8" }).stdout.trim();
+const realTmux = which("tmux");
 if (!realTmux.startsWith("/")) throw new Error("tmux not found");
+// The sandbox Pi runs with a private HOME, where a version-manager shim cannot find its config.
+const realPi = process.env.PI_TMUX_TEST_PI || which("pi");
+if (!realPi.startsWith("/")) throw new Error("pi not found");
+if (/\/(mise|asdf)$/.test(fs.realpathSync(realPi))) throw new Error(`pi is a version-manager shim; set PI_TMUX_TEST_PI=$(mise which pi)`);
+const toolPath = [...new Set([dirname(realPi), dirname(process.execPath), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"])].join(":");
 
 const runDir = (sandbox) => join(sandbox, "run", `tmux-${uid}`);
 const sock = (sandbox, name) => join(runDir(sandbox), name);
@@ -55,7 +63,7 @@ exit 97
 
 function sandboxEnv(sandbox, conf) {
   return {
-    PATH: `${join(sandbox, "bin")}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: homedir(), LC_ALL: "C", TERM: "xterm-256color",
+    PATH: `${join(sandbox, "bin")}:${toolPath}:/usr/sbin:/sbin`, HOME: homedir(), LC_ALL: "C", TERM: "xterm-256color",
     TMUX_TMPDIR: join(sandbox, "run"), PI_TMUX_SCOPES_HOME: join(sandbox, "scopes"),
     PI_TMUX_SCOPE_PI: join(sandbox, "bin", "pi-offline"), PI_CODING_AGENT_DIR: join(sandbox, "agent"),
   };
@@ -68,8 +76,8 @@ function writePi(sandbox) {
   fs.mkdirSync(join(sandbox, "home"), { mode: 0o700 });
   fs.writeFileSync(join(agent, "settings.json"), JSON.stringify({ enableInstallTelemetry: false, enableAnalytics: false, cacheWarming: "off", compaction: { enabled: false }, retry: { enabled: false } }));
   fs.writeFileSync(join(sandbox, "bin", "pi-offline"), `#!/bin/sh
-exec env PATH='${join(sandbox, "bin")}:/opt/homebrew/bin:/usr/bin:/bin' HOME='${join(sandbox, "home")}' PI_CODING_AGENT_DIR='${agent}' PI_OFFLINE=1 PI_TELEMETRY=0 PI_SKIP_VERSION_CHECK=1 \
-  /opt/homebrew/bin/pi --offline --no-extensions --no-mcp --no-skills --no-context-files --no-prompt-templates --no-themes --no-approve --no-tools \
+exec env PATH='${join(sandbox, "bin")}:${toolPath}' HOME='${join(sandbox, "home")}' PI_CODING_AGENT_DIR='${agent}' PI_OFFLINE=1 PI_TELEMETRY=0 PI_SKIP_VERSION_CHECK=1 \
+  '${realPi}' --offline --no-extensions --no-mcp --no-skills --no-context-files --no-prompt-templates --no-themes --no-approve --no-tools \
   --tui-mode regular -e '${join(repo, "extension.ts")}' --session-dir '${join(agent, "sessions")}' "$@"
 `, { mode: 0o700 });
 }
@@ -156,6 +164,8 @@ function variant(label, base, { sourcesScope = false } = {}) {
   const env = { ...sandboxEnv(sandbox, conf), PI_TMUX_SCOPES_HOME: join(sandbox, "scopes", label) };
   const t = (name, ...a) => spawnSync(guardTmux(sandbox), ["-u", "-f", conf, "-S", sock(sandbox, name), ...a], { env, encoding: "utf8" });
   const out = (name, ...a) => t(name, ...a).stdout.trim();
+  // tmux 3.7 prints nothing for `list-keys -T prefix KEY`; select the key from the full table.
+  const prefixKey = (name, key) => out(name, "list-keys", "-T", "prefix").split("\n").filter((l) => new RegExp(`\\s-T prefix\\s+${key}\\s`).test(l)).join("\n");
   // What tmux runs for prefix C-s, the detach hook, the status-line autosave and server start.
   const bin = (cmd, name, extra = {}) => spawnSync(process.execPath, [scopeBin, cmd, sock(sandbox, name)], { env: { ...env, ...extra }, encoding: "utf8" });
   const settled = (name) => waitFor(() => out(name, "show", "-gv", "@scope-started") === "1" && out(name, "show", "-gqv", "@scope-restoring") === "", 45000);
@@ -174,11 +184,11 @@ function variant(label, base, { sourcesScope = false } = {}) {
   });
   check(label, "default server: no badge or title, but the same save/restore wiring", () => {
     const raw = out(fakeDefault, "show", "-gv", "status-left"), title = out(fakeDefault, "show", "-gv", "set-titles-string");
-    const keys = out(fakeDefault, "list-keys", "-T", "prefix", "C-s"), hooks = out(fakeDefault, "show-hooks", "-g", "client-detached");
+    const keys = prefixKey(fakeDefault, "C-s"), hooks = out(fakeDefault, "show-hooks", "-g", "client-detached");
     return { ok: !raw.includes("@scope-name") && !title.includes("@scope-name") && [raw, keys, hooks].every((x) => x.includes("@scope-bin")), detail: `${raw} | ${keys} | ${hooks}` };
   });
   check(label, "workspaces save on prefix C-s, on detach and from the status line", () => {
-    const keys = out(a, "list-keys", "-T", "prefix", "C-s"), hooks = out(a, "show-hooks", "-g", "client-detached"), left = out(a, "show", "-gv", "status-left");
+    const keys = prefixKey(a, "C-s"), hooks = out(a, "show-hooks", "-g", "client-detached"), left = out(a, "show", "-gv", "status-left");
     return { ok: [keys, hooks, left].every((x) => x.includes("@scope-bin")) && /autosave/.test(left) && /detach/.test(hooks), detail: `${keys} | ${hooks}` };
   });
   check(label, "badge, autosave and hooks stay single across config reloads", () => {
@@ -348,7 +358,7 @@ function userBase() {
   return { base: `source-file '${copy}'`, sourcesScope: true };
 }
 if (withUserConfig) { const u = userBase(); variant("user", u.base, { sourcesScope: u.sourcesScope }); }
-else console.log(`SKIP  [user] ${fs.existsSync(userConf) ? "--no-user-config" : "no ~/.tmux.conf"}`);
+else console.log(`SKIP  [user] ${fs.existsSync(userConf) ? "--no-user-config" : "no tmux user config"}`);
 } catch (e) {
   results.push({ variant: "harness", name: "harness error", ok: false, detail: e.stack });
   console.log(`FAIL  [harness] ${e.stack}`);

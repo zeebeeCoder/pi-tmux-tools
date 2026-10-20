@@ -7,11 +7,12 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { inspect, processesFor, readRecords, tmux } from "../../src/runtime.js";
+import { interactiveShell } from "../fixtures/shell.js";
 
 const repo = resolve(import.meta.dirname, "../..");
 const quote = s => "'" + s.replaceAll("'", "'\\''") + "'";
 
-test("ordinary interactive zsh: type pi without exec, quit to shell, start a second Pi", { timeout: 60000 }, async () => {
+test("ordinary interactive shell: type pi without exec, quit to shell, start a second Pi", { timeout: 60000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-tmux-shell-"));
   const name = "pi-continuity-test-" + randomUUID();
   const control = args => execFileSync("tmux", ["-L", name, "-f", "/dev/null", ...args],
@@ -36,7 +37,7 @@ test("ordinary interactive zsh: type pi without exec, quit to shell, start a sec
   const shell = "exec env -i " + [
     "PATH=" + process.env.PATH, "HOME=" + dir, "ZDOTDIR=" + dir,
     "PI_CODING_AGENT_DIR=" + agentDir, "PI_OFFLINE=1", "TERM=xterm-256color"
-  ].map(quote).join(" ") + ' TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" zsh -f -i';
+  ].map(quote).join(" ") + ' TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" ' + interactiveShell;
   const piCommand = file =>
     "pi --offline --no-extensions --no-mcp --no-skills --no-context-files " +
     "--no-prompt-templates --no-themes --no-approve --tui-mode regular -e " +
@@ -71,7 +72,7 @@ test("ordinary interactive zsh: type pi without exec, quit to shell, start a sec
     const first = await wait(row => row.status === "live-persistent" && row.binding?.sessionFile === a);
     assert.equal(first.pane.root.pid, shellPid);
     assert.notEqual(first.binding.process.pid, shellPid, "Pi must not be the pane root");
-    assert.equal(first.binding.process.ppid, shellPid, "interactive zsh remains Pi's parent");
+    assert.equal(first.binding.process.ppid, shellPid, "interactive shell remains Pi's parent");
     assert.equal(first.binding.process.pgid, first.binding.process.pid);
     assert.equal(first.binding.cwd, cwd);
 
@@ -85,7 +86,7 @@ test("ordinary interactive zsh: type pi without exec, quit to shell, start a sec
     // Prove the original shell is responsive, rather than merely seeing a
     // transient gap while Pi tears down its TUI.
     const marker = join(dir, "shell-ready");
-    send("print -r -- ready > " + quote(marker));
+    send("printf '%s\\n' ready > " + quote(marker));
     await wait(() => existsSync(marker) && shellHasTerminal());
 
     send(piCommand(b));

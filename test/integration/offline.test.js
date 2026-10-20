@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { inspect, readDisplay, readRecords, tmux } from "../../src/runtime.js";
+import { inspect, processesFor, readDisplay, readRecords, tmux } from "../../src/runtime.js";
 import { PREFIX } from "../../src/logic.js";
 const repo = resolve(import.meta.dirname, "../..");
 const quote = s => "'" + s.replaceAll("'", "'\\''") + "'";
@@ -171,7 +171,10 @@ test("two real offline Pi TUIs: exact shared-cwd identity, lifecycle, movement, 
     assert.equal(inspect(socket).find(r => r.pane.pane === p2).binding, null);
 
     // Same socket address and fresh %0: old server/pane metadata is never retained.
+    const old = inspect(socket)[0].pane.server.pid;
     control(["kill-server"]); // always qualified by this test's unique -L socket
+    // tmux 3.7 acknowledges kill-server before the old server lets go of the socket.
+    for (let i = 0; i < 500 && processesFor([old])[old]; i++) await sleep(10);
     control(["new-session", "-d", "-s", "replacement", "exec sleep 60"]);
     assert.equal(control(["display-message", "-p", "#{socket_path}"]), socket);
     const replacement = inspect(socket);
