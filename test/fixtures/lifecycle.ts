@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+// A compiled Pi (e.g. mise's aqua build) is its own execPath; only an npm Pi runs on node.
+const node = /\/node$/.test(process.execPath) ? process.execPath : "node";
 export default function(pi: ExtensionAPI) {
   pi.registerCommand("fixture-name", {
     description: "Test only: supported native rename/clear without model requests",
@@ -21,7 +23,7 @@ export default function(pi: ExtensionAPI) {
     description: "Test only: attempt inherited-terminal background claim",
     handler: async (output, _ctx) => {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(process.execPath, [fileURLToPath(new URL("./claim.js", import.meta.url)), output],
+        const child = spawn(node, [fileURLToPath(new URL("./claim.js", import.meta.url)), output],
           { stdio: "inherit" });
         child.on("error", reject);
         child.on("exit", code => code === 0 ? resolve() : reject(new Error("claim child failed")));
