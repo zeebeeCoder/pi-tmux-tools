@@ -375,10 +375,12 @@ check("guard", "real default server untouched (same PID before and after)", () =
 
 const evidence = join(repo, "evidence/scopes", new Date().toISOString().replaceAll(":", "-"));
 if (keep) {
-  const env = sandboxEnv(sandbox, "");
-  const conf = join(sandbox, withUserConfig ? "user.conf" : "fixture.conf");
+  // The kept servers belong to the last variant, which has its own workspaces home.
+  const label = withUserConfig ? "user" : "fixture";
+  const env = { ...sandboxEnv(sandbox, ""), PI_TMUX_SCOPES_HOME: join(sandbox, "scopes", label) };
+  const conf = join(sandbox, `${label}.conf`);
   const vars = ["PATH", "TMUX_TMPDIR", "PI_TMUX_SCOPES_HOME", "PI_TMUX_SCOPE_PI", "PI_CODING_AGENT_DIR"].map((k) => `${k}='${env[k]}'`).join(" ");
-  console.log(`\nKept sandbox ${sandbox}\n  attach:  env ${vars} tmux -f '${conf}' -S '${sock(sandbox, (withUserConfig ? "user" : "fixture") + "-r")}' attach\n  cleanup: node ${join(repo, "test/manual/verify-scopes.js")} --cleanup ${sandbox}`);
+  console.log(`\nKept sandbox ${sandbox}\n  attach:  env ${vars} tmux -f '${conf}' -S '${sock(sandbox, `${label}-r`)}' attach\n  cleanup: node ${join(repo, "test/manual/verify-scopes.js")} --cleanup ${sandbox}`);
 } else {
   check("harness", "all sandbox servers stopped and sandbox removed", () => { cleanup(sandbox); return true; });
 }
