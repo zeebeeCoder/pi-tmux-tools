@@ -67,7 +67,7 @@ test("owned PTY clients: real popup/fzf cancel, refresh, move, zoom, stale targe
     catch (error) { throw new Error(error.message + "\nOWNER PANE:\n" + run(socket, ["capture-pane", "-p", "-t", pane, "-S", "-100"])); }
     return { pane, ready, record: JSON.parse(readFileSync(ready, "utf8")) };
   };
-  const cwd = join(dir, "project \u202e ' ; $(touch NEVER) #{pane_id}");
+  const cwd = join(dir, "project ' ; $(touch NEVER) #{pane_id} \u202e");
   let target;
   try {
     mkdirSync(cwd);
@@ -91,6 +91,13 @@ test("owned PTY clients: real popup/fzf cancel, refresh, move, zoom, stale targe
     assert.ok(log(c1).slice(offset).includes("pi-target"));
     assert.ok(log(c1).slice(offset).includes("Last event"), "aligned headings rendered");
     assert.ok(log(c1).slice(offset).includes("Folder"));
+    assert.ok(log(c1).slice(offset).includes("Tmux session"));
+    assert.ok(log(c1).slice(offset).includes("Window"));
+    assert.ok(log(c1).slice(offset).includes("Pane"));
+    // Location updates come from tmux, not the registered conversation name.
+    run(socket, ["rename-window", "-t", a.pane, "renamed-location"]);
+    c1.child.stdin.write("\x12");
+    await wait(() => log(c1).slice(offset).includes("renamed-location"), "refresh shows renamed window");
     assert.ok(log(c1).slice(offset).includes("38;5;75m"), "idle dot blue in real PTY");
     assert.ok(log(c1).slice(offset).includes("38;5;214m"), "attention dot amber in real PTY");
     assert.ok(!log(c1).slice(offset).includes("id:"), "debug IDs hidden");
@@ -103,10 +110,12 @@ test("owned PTY clients: real popup/fzf cancel, refresh, move, zoom, stale targe
     // A second, genuinely narrow popup renders grapheme-aware columns and
     // still roundtrips the ANSI-stripped selection through real fzf.
     const unicode = await agent("unicode-target", "pi", "界😀e\u0301");
+    run(socket, ["rename-window", "-t", unicode.pane, "界😀e\u0301"]);
     const narrow = await attach("observer", 64);
     offset = await open(narrow);
     await wait(() => log(narrow).slice(offset).includes("界😀e\u0301"), "Unicode name in narrow popup");
-    assert.ok(log(narrow).slice(offset).includes("Folder"));
+    assert.ok(!log(narrow).slice(offset).includes("Folder"));
+    assert.ok(log(narrow).slice(offset).includes("Window"));
     assert.ok(log(narrow).slice(offset).includes("Last"));
     narrow.child.stdin.write("界"); await sleep(200); narrow.child.stdin.write("\r");
     await wait(() => currentPane(narrow) === unicode.pane, "narrow Unicode filter navigates exact token");

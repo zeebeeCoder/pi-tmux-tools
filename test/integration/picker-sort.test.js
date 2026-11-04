@@ -89,7 +89,7 @@ test('owned real fzf/PTY: bidirectional arrow sort/wrap, Ctrl-B/F query editing,
     await select(b.pane, 'Right/R preserve Project AND query (otherwise A or C wins)');
 
     await open(); await filter('xq');
-    await control(right,'Project/folder'); await control(right,'Session');
+    await control(right,'Project/folder'); await control(right,'Conversation');
     await select(a.pane, 'Session fuzzy subset stays alphabetic, not match-score sorted');
     await open(); await filter('xq');
     for (const sort of SORTS.slice(1,4)) await control(right,sort);

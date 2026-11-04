@@ -19,7 +19,7 @@ test('Recent uses exact recorded event milliseconds, not rounded age, write/hear
   assert.deepEqual(sorted(rows), ['%2','%3','%1']);
   assert.deepEqual(choicesIds(rows), ['%2','%3','%1']);
   assert.deepEqual(ids(rows), ['%1','%2','%3'], 'input is not mutated');
-  assert.ok([...makeChoices(rows, {now}).values()].every(c => c.line.endsWith('now       ')));
+  assert.ok([...makeChoices(rows, {now}).values()].every(c => c.line.endsWith('now ')));
 });
 
 test('unknown/missing/invalid/future stamps last; equal instants and unknowns have deterministic identity ties', () => {
@@ -49,12 +49,12 @@ test('Session uses full trusted safe names, natural numeric/case ordering, Unnam
   const named = (pane, name, patch = {}) => row(pane, {sessionName:name, sessionNameSource:'pi-api', ...patch});
   const rows = [named(1,'Work 10'),row(2),named(3,'Work 2'),named(4,'Alpha'),
     named(5,'Z but unverified', {sessionNameSource:'tmux-title'}),named(6,'   ')];
-  assert.deepEqual(sorted(rows, 'Session'), ['%4','%3','%1','%2','%5','%6']);
+  assert.deepEqual(sorted(rows, 'Conversation'), ['%4','%3','%1','%2','%5','%6']);
   const prefix = 'long title '.repeat(10);
-  assert.deepEqual(choicesIds([named(1,prefix+'z'),named(2,prefix+'a')], {sort:'Session', terminalWidth:40}), ['%2','%1']);
+  assert.deepEqual(choicesIds([named(1,prefix+'z'),named(2,prefix+'a')], {sort:'Conversation', terminalWidth:40}), ['%2','%1']);
   const ties = [named(10,'Same'),named(2,'Same')];
   for (const sort of SORTS) assert.deepEqual(sorted(ties, sort), sorted([...ties].reverse(), sort));
-  assert.deepEqual(sorted([named(1,'alpha'),named(2,'Alpha')], 'Session'), ['%2','%1']);
+  assert.deepEqual(sorted([named(1,'alpha'),named(2,'Alpha')], 'Conversation'), ['%2','%1']);
 });
 
 test('Agent alphabetic and Status attention/working/idle/unknown; same-label ties independent of input order', () => {

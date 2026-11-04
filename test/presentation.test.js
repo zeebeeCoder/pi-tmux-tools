@@ -35,7 +35,7 @@ test('terminal-cell approximation preserves graphemes and alignment at responsiv
   for (const terminalWidth of [40, 55, 68, 100, 180]) {
     const choices = makeChoices([row({sessionName:sessionName('日本語😀e\u0301'.repeat(100)), sessionNameSource:'pi-api'})], {terminalWidth});
     const c = [...choices.values()][0];
-    assert.equal(width(c.line.split('\t')[1]), columns(terminalWidth).reduce((a,b)=>a+b,0) + 8);
+    assert.equal(width(c.line.split('\t')[1]), columns(terminalWidth).reduce((a,b)=>a+b,0) + 2 * (columns(terminalWidth).filter(Boolean).length - 1));
     assert.equal(width(choices.heading), width(c.line.split('\t')[1]));
     assert.ok(width(heading(columns(terminalWidth))) <= terminalWidth - 4);
     assert.ok(!/\p{Mark}$/u.test(c.line.split('\t')[1].trim()));
@@ -46,6 +46,41 @@ test('folders use shortest distinguishing trailing parent, same cwd stays short,
   assert.deepEqual(folders(['/x/a/project','/y/b/project','/z/other','/x/a/project','/']), ['a/project','b/project','other','a/project','/']);
   assert.deepEqual(folders(['/x/a/project','/y/a/project']), ['x/a/project','y/a/project']);
   assert.deepEqual(folders(['/x/project/','/x/project/']), ['project','project']);
+});
+
+test('tmux location leads named and unnamed rows; safe, searchable, distinct split panes', () => {
+  const pane = {sessionName:'alpha-desk', windowIndex:'3', windowName:'tui', paneIndex:'1'};
+  const rows = [{...row(), pane}, {...row({pane:'%3', sessionName:'Named work', sessionNameSource:'pi-api'}),
+    pane:{...pane, paneIndex:'2'}}];
+  const choices = makeChoices(rows, {terminalWidth:180});
+  const lines = [...choices.values()].map(c => c.line);
+  for (const line of lines) {
+    assert.match(line, /alpha-desk\s+3:tui/);
+    assert.ok(!line.includes('Unnamed'));
+  }
+  assert.ok(lines.some(line => /3:tui\s+1\s+—/.test(line)));
+  assert.ok(lines.some(line => /3:tui\s+2\s+Named work/.test(line)));
+  for (const query of ['alpha-desk', '3:tui']) {
+    const result = spawnSync(FZF, ['--ansi','--delimiter=\t','--with-nth=2..','--filter='+query], {
+      input:[...choices.values()].map(c => c.inputLine).join('\n')+'\n', encoding:'utf8', env:fzfEnv()
+    });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout.trimEnd().split('\n').length, 2);
+  }
+  const hostile = makeChoices([{...row(), pane:{...pane, sessionName:'a\x1b\t\n\u202e', windowName:'界😀e\u0301'}}], {terminalWidth:180});
+  const c = [...hostile.values()][0];
+  assert.ok(!/[\p{Cc}\p{Cf}]/u.test(c.line.replace('\t','')));
+  assert.equal(parseResult({status:0, stdout:'\n\n'+c.line+'\n'},hostile).binding, c.binding);
+  for (const terminalWidth of [32,40,55,64,80,100,120,180,240]) {
+    const sizes = columns(terminalWidth);
+    assert.ok(sizes.every(n => n >= 0));
+    assert.ok(sizes[2] > 0 && sizes[3] > 0 && sizes[4] > 0);
+    const view = makeChoices(rows, {terminalWidth});
+    assert.ok(width(view.heading) <= terminalWidth - 4);
+    assert.equal(width([...view.values()][0].line.split('\t')[1]), width(view.heading));
+    if (terminalWidth < 64) assert.equal(sizes[5], 0);
+    if (terminalWidth < 104) assert.equal(sizes[6], 0);
+  }
 });
 
 test('relative observation age boundaries, missing/invalid/future; never used to change state', () => {
@@ -72,7 +107,7 @@ test('only code-owned colors; stripped fzf output roundtrips exact token/line, t
 });
 
 test('real fzf ANSI parsing filters visible names/folders, not hidden tokens or internal metadata', () => {
-  const choices = makeChoices([row({sessionName:'Visible conversation',sessionNameSource:'pi-api',cwd:'/x/visible-folder'})]);
+  const choices = makeChoices([row({sessionName:'Visible conversation',sessionNameSource:'pi-api',cwd:'/x/visible-folder'})], {terminalWidth:180});
   const [[token,c]] = choices;
   const filter = query => spawnSync(FZF, ['--ansi','--delimiter=\t','--with-nth=2..','--filter='+query], {
     input:c.inputLine+'\n',encoding:'utf8',env:fzfEnv()
@@ -84,14 +119,13 @@ test('real fzf ANSI parsing filters visible names/folders, not hidden tokens or 
   for (const query of [token,binding.sessionId,binding.pane]) assert.equal(filter(query).status,1);
 });
 
-test('legacy materialized metadata remains readable; name provenance/bounds validated; fallback IDs only when useful', () => {
+test('legacy metadata remains readable; conversation provenance validated; internal IDs never shown', () => {
   assert.deepEqual(decodeDisplay(encodeDisplay(binding)),binding);
   const c = [...makeChoices([row()]).values()][0];
-  assert.match(c.line,/Unnamed/); assert.ok(!c.line.includes('long-i'));
+  assert.match(c.line,/—/); assert.ok(!c.line.includes('long-i'));
   const choices = makeChoices([row(),row({pane:'%3',sessionId:'other-internal-session'})],{terminalWidth:180});
-  assert.match([...choices.values()][0].line,/Unnamed long-i/);
-  assert.match([...choices.values()][1].line,/Unnamed other-/);
-  assert.match([...makeChoices([row({sessionName:'unverified title'})]).values()][0].line,/Unnamed/);
+  assert.ok([...choices.values()].every(c => !/Unnamed|long-i|other-/.test(c.line)));
+  assert.ok(![...makeChoices([row({sessionName:'unverified title'})]).values()][0].line.includes('unverified'));
   for (const name of ['bad\x1b', 'bad\n', 'bad\u202e', 'x'.repeat(257), 42]) {
     assert.throws(()=>encodeDisplay({...binding,sessionName:name,sessionNameSource:'pi-api'}));
   }

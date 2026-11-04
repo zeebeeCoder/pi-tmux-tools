@@ -73,13 +73,20 @@ export function folders(paths) {
 }
 export function columns(terminalWidth = 80) {
   const total = Math.max(32, Math.min(240, Math.floor(terminalWidth) || 80)) - 4;
-  const last = total >= 60 ? 10 : 7;
-  const flexible = total - (1 + 6 + last + 8);
-  const name = Math.max(4, Math.floor(flexible * 0.6));
-  return [1, 6, name, flexible - name, last];
+  // Reserve the tmux address first. Secondary context disappears on small
+  // terminals rather than squeezing every column into unreadable fragments.
+  const agent = total >= 60 ? 6 : 2;
+  const last = total >= 90 ? 10 : 4;
+  const conversation = total >= 60 ? Math.max(8, Math.floor(total * 0.20)) : 0;
+  const folder = total >= 100 ? Math.floor(total * 0.18) : 0;
+  const gaps = (5 + Number(conversation > 0) + Number(folder > 0)) * 2;
+  const flexible = total - (1 + agent + 4 + last + conversation + folder + gaps);
+  const session = Math.max(3, Math.floor(flexible * 0.43));
+  return [1, agent, session, flexible - session, 4, conversation, folder, last];
 }
-export const columnLine = (values, sizes) => values.map((s, i) => (i === 3 ? fitTail : fit)(s, sizes[i])).join('  ');
-export const heading = sizes => columnLine(['', 'Agent', 'Session', 'Folder', sizes[4] === 10 ? 'Last event' : 'Last'], sizes);
+export const columnLine = (values, sizes) => values.flatMap((s, i) =>
+  sizes[i] > 0 ? [(i === 6 ? fitTail : fit)(s, sizes[i])] : []).join('  ');
+export const heading = sizes => columnLine(['', 'Agent', 'Tmux session', 'Window', 'Pane', 'Conversation', 'Folder', sizes[7] === 10 ? 'Last event' : 'Last'], sizes);
 // Fixed, code-owned SGR only. Working yellow; idle blue; attention amber; unknown grey.
 export const DOT_COLORS = { working: '38;5;226', idle: '38;5;75', 'needs-attention': '38;5;214', unknown: '38;5;244' };
 export const stripColor = s => s.replace(/\x1b\[[0-9;]*m/g, '');

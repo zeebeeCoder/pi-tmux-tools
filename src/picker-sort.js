@@ -1,5 +1,5 @@
 // Picker-only ordering. No writer/activity/schema changes and no I/O.
-export const SORTS = ['Recent', 'Project/folder', 'Session', 'Agent', 'Status'];
+export const SORTS = ['Recent', 'Project/folder', 'Conversation', 'Agent', 'Status'];
 export const nextSort = sort => SORTS[(SORTS.indexOf(sort) + 1) % SORTS.length];
 export const previousSort = sort => SORTS[(SORTS.indexOf(sort) + SORTS.length - 1) % SORTS.length];
 export const namedSession = b => ['pi-api', 'claude-hook'].includes(b.sessionNameSource) &&
@@ -46,7 +46,7 @@ export function sortRows(rows, sort = 'Recent', now = Date.now()) {
     let primary = 0;
     switch (sort) {
       case 'Project/folder': primary = tuple(a.project, b.project); break;
-      case 'Session': primary = tuple(a.session, b.session); break;
+      case 'Conversation': primary = tuple(a.session, b.session); break;
       case 'Agent': primary = compare(a.agent, b.agent); break;
       case 'Status': primary = a.status - b.status; break;
       default: primary = a.time === null ? (b.time === null ? 0 : 1) : b.time === null ? -1 : b.time - a.time;

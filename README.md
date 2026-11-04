@@ -56,7 +56,7 @@ node /absolute/path/to/bin/picker.js open --socket SOCKET --client CLIENT --clie
 Supply the invoking tmux client's exact socket/name/PID, not inferred defaults.
 It opens a popup for that client. Type to filter, Enter to validate/navigate,
 Ctrl-R to refresh, Esc/Ctrl-C to cancel. Left/Right cycle Recent → Project/folder →
-Session → Agent → Status; Ctrl-B/Ctrl-F move the query cursor. Sort/filter preserve
+Conversation → Agent → Status; Ctrl-B/Ctrl-F move the query cursor. Sort/filter preserve
 query text. Recent uses recorded activity time, not file timestamps or liveness.
 
 Rows are **last-observed**, not a live inventory: crashed owners may remain until
@@ -66,9 +66,12 @@ restore, launch, poll processes or scan transcripts. Validation and navigation
 are separate operations, so a final check-to-switch race remains. Normal PTY
 clients are supported, not control mode; shared tmux sessions still share focus.
 
-Custom names come only from Pi's public session-name API or supported Claude
-`session_title` hook fields; absent names are `Unnamed`. No pane-title/transcript
-inference. Display controls are escaped and inherited `FZF_*` configuration is
+Rows lead with tmux session, window index/name and pane index, including for named
+conversations. Conversation names and folders are secondary; narrow popups hide
+folder first, then conversation. Missing conversation names show `—`, not internal
+IDs. Custom conversation names come only from Pi's public session-name API or
+supported Claude `session_title` hook fields. No pane-title/transcript inference.
+Tmux location is read on open/refresh and is display context, never target identity. Display controls are escaped and inherited `FZF_*` configuration is
 removed. Working is yellow, idle blue, attention amber, unknown grey. Idle never
 means accepted work. Refresh explicitly: ages and activity are snapshots.
 

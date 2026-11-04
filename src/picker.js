@@ -39,15 +39,13 @@ export function makeChoices(rows, { terminalWidth = 80, now = Date.now(), sort =
     const token = randomBytes(16).toString("hex");
     const activity = STATES.includes(row.activity?.state) ? row.activity.state : "unknown";
     const agent = b.agent === "claude" ? "claude" : "pi";
-    let name = namedSession(b) ? label(b.sessionName) : "Unnamed";
-    const peers = active.filter((r, j) => !namedSession(r.binding) && (r.binding.agent ?? "pi") === agent && shortFolders[j] === shortFolders[i]);
-    if (!namedSession(b) && peers.length > 1) {
-      let length = 6;
-      while (length < 12 && peers.some(r => r !== row && r.binding.sessionId.slice(0, length) === b.sessionId.slice(0, length))) length++;
-      const duplicate = peers.some(r => r !== row && r.binding.sessionId.slice(0, length) === b.sessionId.slice(0, length));
-      name += " " + label(duplicate ? b.owner.slice(0, 6) : b.sessionId.slice(0, length), length);
-    }
-    const visible = columnLine(["●", agent, name, shortFolders[i], relativeAge(row.activity?.observedAt, now)], sizes);
+    const name = namedSession(b) ? label(b.sessionName) : "—";
+    // Location is live tmux display context, never conversation identity.
+    const p = row.pane ?? {};
+    const session = label(p.sessionName || "—");
+    const window = label(p.windowIndex == null ? "—" : `${p.windowIndex}:${p.windowName || "—"}`);
+    const visible = columnLine(["●", agent, session, window, label(p.paneIndex ?? "—"),
+      name, shortFolders[i], relativeAge(row.activity?.observedAt, now)], sizes);
     // fzf --ansi strips SGR on output. Validate that exact plain line, not a
     // color-stripped approximation of arbitrary returned bytes. Token stays hidden.
     const line = token + "\t" + visible;

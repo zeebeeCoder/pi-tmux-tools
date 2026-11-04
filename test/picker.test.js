@@ -15,7 +15,7 @@ test("labels escape controls, bidi, separators; tokens are opaque and original m
   const [[token, c]] = choices;
   assert.match(token, /^[a-f0-9]{32}$/);
   assert.equal(c.line.split("\t").length, 2);
-  assert.match(c.line, /Unnamed/);
+  assert.match(c.line, /—/);
   assert.doesNotMatch(c.line, /session-one|%2|\$1/);
   assert.match(c.inputLine, /\x1b\[38;5;75m●\x1b\[0m/);
   assert.equal(parseResult(accepted(c.line), choices).binding.cwd, "/" + hostile);

@@ -1,12 +1,12 @@
 # Live agent picker
 
-A keyboard popup lists every registered agent on the current tmux server, with its folder, session name, agent kind, coloured activity dot and the age of its last event. You type to filter, change the sort with Left/Right, and press Enter to jump to that agent's pane. Rows are last-observed, not a live inventory. Only Enter strictly re-validates the chosen owner and conversation before switching.
+A keyboard popup lists every registered agent on the current tmux server, with tmux session, window index/name and pane index first, then optional conversation name and folder, agent kind, coloured activity dot and the age of its last event. You type to filter, change the sort with Left/Right, and press Enter to jump to that agent's pane. Rows are last-observed, not a live inventory. Only Enter strictly re-validates the chosen owner and conversation before switching.
 
 ## Sub-features
 
-- `pick-list`: one row per registered agent on this server only. Unnamed sessions show `Unnamed`.
+- `pick-list`: one row per registered agent on this server only. Tmux location identifies named and unnamed conversations alike; missing conversation names show `—`. Narrow popups omit folder, then conversation, preserving location.
 - `pick-filter`: typing filters the list. Ctrl-B/Ctrl-F move the query cursor.
-- `pick-sort`: Left/Right cycle Recent → Project/folder → Session → Agent → Status. The query is kept. Recent is the default for each new popup.
+- `pick-sort`: Left/Right cycle Recent → Project/folder → Conversation → Agent → Status. The query is kept. Recent is the default for each new popup.
 - `pick-refresh`: Ctrl-R reloads the rows and keeps the sort mode and query.
 - `pick-navigate`: Enter validates the selected owner and conversation, then switches the invoking client to that pane.
 - `pick-refuse`: a stale or replaced owner is refused, and nothing moves.
@@ -25,7 +25,7 @@ Preconditions:
 
 - **Automated PTY path.** Run `node --test --test-concurrency=1 test/integration/picker.test.js test/integration/picker-sort.test.js`. Every test passes. These tests drive real fzf inside owned PTY clients and cover list, sort, query editing, refresh and exact navigation.
 - **Human path: bind.** Attach a real terminal with the full `attach:` line that `--keep` printed. Then run `tmux -S "$S" bind a run-shell -b "node $REPO/bin/picker.js open --socket #{q:socket_path} --client #{q:client_name} --client-pid #{client_pid}"`.
-- **Open and filter.** Press `prefix a`. A popup lists only `user-r`'s Pis, newest first. Type part of a folder name and the rows narrow.
+- **Open and filter.** Press `prefix a`. A popup lists only `user-r`'s Pis, newest first. Check session/window names against the tmux status bar, including unnamed agents and multiple panes in one window. Type part of a visible tmux session or window name and the rows narrow. Rename a sandbox window, press Ctrl-R, and check the new label; Enter still targets the exact pane.
 - **Sort.** Press Right. The header shows `Project`, and the query text is unchanged.
 - **Navigate.** Select a Pi in another window and press Enter. The client's active pane becomes that Pi's pane. Confirm with `tmux -S "$S" display -p '#{pane_id}'`.
 - **Refuse stale.** Note one Pi's pane, then kill that Pi with `tmux -S "$S" send-keys -t <pane> C-d`. Open the picker, select the stale row and press Enter. The picker refuses, and the active pane does not change.
